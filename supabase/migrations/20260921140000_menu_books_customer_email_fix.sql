@@ -1,3 +1,6 @@
+alter table public.menu_orders
+  alter column email drop not null;
+
 create or replace function public.post_paid_menu_order_to_books_v2()
 returns trigger
 language plpgsql
