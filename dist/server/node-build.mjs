@@ -181,6 +181,9 @@ const prepareFlutterwaveHostedSession = async ({ orderId, paymentAmount, payment
     if (order.payment_status === "paid") {
       throw new FlutterwaveRequestError("This order has already been paid", 409);
     }
+    if (!order.email?.trim()) {
+      throw new FlutterwaveRequestError("An email address is required for online payment.", 400);
+    }
     const { secretKey } = getConfiguration();
     const amount = Number(paymentAmount);
     const currency = String(paymentCurrency).toUpperCase();
