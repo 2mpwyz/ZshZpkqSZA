@@ -34,6 +34,8 @@ type SpecialPaymentAttempt = {
   amount: number | string;
   currency: string;
   status: string;
+  payment_url: string | null;
+  created_at: string;
 };
 
 type FlutterwaveTransaction = {
@@ -111,6 +113,17 @@ const getPaymentAttemptAsService = async (txRef: string) => {
   return attempt;
 };
 
+const getActivePaymentAttempt = async (bookingId: string) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/special_event_payment_attempts?booking_id=eq.${encodeURIComponent(bookingId)}&status=in.(initiated,redirected,verified)&select=id,booking_id,tx_ref,transaction_id,amount,currency,status,payment_url,created_at&order=created_at.desc&limit=1`,
+    { headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey) },
+  );
+  if (!response.ok) throw new Error("Unable to retrieve active event payment attempt");
+  const [attempt] = await response.json() as SpecialPaymentAttempt[];
+  return attempt || null;
+};
+
 const createPaymentAttempt = async (values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
   const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts`, {
@@ -177,8 +190,31 @@ export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
     if (Number(booking.total_amount) <= 0) throw new SpecialEventPaymentError("This booking does not require online payment", 400);
 
     const { secretKey } = getConfiguration();
+    const activeAttempt = await getActivePaymentAttempt(booking.id);
+    if (activeAttempt?.status === "redirected" && activeAttempt.payment_url) {
+      return res.json({ paymentUrl: activeAttempt.payment_url, txRef: activeAttempt.tx_ref, bookingId: booking.id });
+    }
+    if (activeAttempt?.status === "verified") {
+      throw new SpecialEventPaymentError("Payment verification is still processing. Refresh My Events shortly.", 409);
+    }
+    if (activeAttempt?.status === "initiated") {
+      const attemptAge = Date.now() - new Date(activeAttempt.created_at).getTime();
+      if (attemptAge < 120_000) {
+        throw new SpecialEventPaymentError("Secure checkout is being prepared. Try again in a moment.", 409);
+      }
+      await updatePaymentAttempt(activeAttempt.tx_ref, { status: "expired", failure_reason: "Checkout preparation timed out" });
+    }
+
     txRef = `special-event-${booking.order_number}-${randomUUID()}`;
-    await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    try {
+      await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    } catch (error) {
+      const racedAttempt = await getActivePaymentAttempt(booking.id);
+      if (racedAttempt?.status === "redirected" && racedAttempt.payment_url) {
+        return res.json({ paymentUrl: racedAttempt.payment_url, txRef: racedAttempt.tx_ref, bookingId: booking.id });
+      }
+      throw error;
+    }
     const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secretKey}`, "content-type": "application/json" },
