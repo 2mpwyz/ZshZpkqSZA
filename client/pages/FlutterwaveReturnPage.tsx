@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabase";
 
 type PaymentResult =
   | { status: "loading" }
-  | { status: "success"; orderNumber: string }
+  | { status: "success"; orderNumber: string; eventPayment: boolean }
   | { status: "cancelled"; message: string }
   | { status: "error"; message: string };
 
@@ -43,11 +43,12 @@ const FlutterwaveReturnPage = () => {
       const transactionId = searchParams.get("transaction_id");
       const txRef = searchParams.get("tx_ref");
       const status = searchParams.get("status");
+      const eventPayment = txRef?.startsWith("hospitality-event-") ?? false;
 
       if (status !== "successful") {
         const { data: { session } } = await supabase.auth.getSession();
         if (txRef && session?.access_token) {
-          fetch("/api/payments/flutterwave/cancel", {
+          fetch(eventPayment ? "/api/payments/hospitality-events/cancel" : "/api/payments/flutterwave/cancel", {
             method: "POST",
             headers: {
               Authorization: `Bearer ${session.access_token}`,
@@ -94,7 +95,7 @@ const FlutterwaveReturnPage = () => {
       }
 
       try {
-        const response = await fetch("/api/payments/flutterwave/verify", {
+        const response = await fetch(eventPayment ? "/api/payments/hospitality-events/verify" : "/api/payments/flutterwave/verify", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
@@ -105,6 +106,7 @@ const FlutterwaveReturnPage = () => {
         const payload = (await response.json()) as {
           orderNumber?: string;
           paymentStatus?: string;
+          confirmationNumber?: string;
           error?: string;
         };
 
@@ -113,7 +115,7 @@ const FlutterwaveReturnPage = () => {
         }
 
         clearPendingCheckout();
-        if (active) setResult({ status: "success", orderNumber: payload.orderNumber });
+        if (active) setResult({ status: "success", orderNumber: payload.orderNumber, eventPayment });
       } catch (error) {
         if (active) {
           setResult({
@@ -130,13 +132,14 @@ const FlutterwaveReturnPage = () => {
     };
   }, [searchParams]);
 
+  const eventPayment = searchParams.get("tx_ref")?.startsWith("hospitality-event-") ?? false;
   const retryPayment = () => {
-    navigate("/menu", { replace: true });
+    navigate(eventPayment ? "/events" : "/menu", { replace: true });
   };
 
   const returnToMenu = () => {
     clearPendingCheckout();
-    navigate("/menu", { replace: true });
+    navigate(eventPayment ? "/events" : "/menu", { replace: true });
   };
 
   return (
@@ -154,8 +157,8 @@ const FlutterwaveReturnPage = () => {
           {result.status === "success" && (
             <>
               <CheckCircle className="mx-auto h-12 w-12 text-green-600" />
-              <h1 className="mt-5 text-2xl font-semibold text-sheraton-navy">Order Confirmed</h1>
-              <p className="mt-2 text-muted-foreground">Your payment was received and your order is being prepared.</p>
+              <h1 className="mt-5 text-2xl font-semibold text-sheraton-navy">{result.eventPayment ? "Event Booking Confirmed" : "Order Confirmed"}</h1>
+              <p className="mt-2 text-muted-foreground">Your payment was received and your {result.eventPayment ? "event booking is confirmed" : "order is being prepared"}.</p>
               <div className="mt-6 rounded-lg bg-sheraton-cream p-4">
                 <p className="text-sm text-muted-foreground">Order Number</p>
                 <p className="mt-1 text-2xl font-bold text-sheraton-navy">{result.orderNumber}</p>
