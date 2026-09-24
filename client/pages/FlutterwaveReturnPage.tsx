@@ -8,6 +8,7 @@ import { supabase } from "../lib/supabase";
 type PaymentResult =
   | { status: "loading" }
   | { status: "success"; orderNumber: string; eventPayment: boolean }
+  | { status: "review"; orderNumber: string }
   | { status: "cancelled"; message: string }
   | { status: "error"; message: string };
 
@@ -43,12 +44,12 @@ const FlutterwaveReturnPage = () => {
       const transactionId = searchParams.get("transaction_id");
       const txRef = searchParams.get("tx_ref");
       const status = searchParams.get("status");
-      const eventPayment = txRef?.startsWith("hospitality-event-") ?? false;
+      const eventPayment = txRef?.startsWith("special-event-") ?? false;
 
       if (status !== "successful") {
         const { data: { session } } = await supabase.auth.getSession();
         if (txRef && session?.access_token) {
-          fetch(eventPayment ? "/api/payments/hospitality-events/cancel" : "/api/payments/flutterwave/cancel", {
+          fetch(eventPayment ? "/api/payments/special-events/cancel" : "/api/payments/flutterwave/cancel", {
             method: "POST",
             headers: {
               Authorization: `Bearer ${session.access_token}`,
@@ -95,7 +96,7 @@ const FlutterwaveReturnPage = () => {
       }
 
       try {
-        const response = await fetch(eventPayment ? "/api/payments/hospitality-events/verify" : "/api/payments/flutterwave/verify", {
+        const response = await fetch(eventPayment ? "/api/payments/special-events/verify" : "/api/payments/flutterwave/verify", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
@@ -110,9 +111,15 @@ const FlutterwaveReturnPage = () => {
           error?: string;
         };
 
-        if (!response.ok || payload.paymentStatus !== "paid" || !payload.orderNumber) {
+        if (!response.ok || !payload.orderNumber) {
           throw new Error(payload.error || "Payment could not be confirmed.");
         }
+        if (eventPayment && payload.paymentStatus === "manual_review") {
+          clearPendingCheckout();
+          if (active) setResult({ status: "review", orderNumber: payload.orderNumber });
+          return;
+        }
+        if (payload.paymentStatus !== "paid") throw new Error(payload.error || "Payment could not be confirmed.");
 
         clearPendingCheckout();
         if (active) setResult({ status: "success", orderNumber: payload.orderNumber, eventPayment });
@@ -132,7 +139,7 @@ const FlutterwaveReturnPage = () => {
     };
   }, [searchParams]);
 
-  const eventPayment = searchParams.get("tx_ref")?.startsWith("hospitality-event-") ?? false;
+  const eventPayment = searchParams.get("tx_ref")?.startsWith("special-event-") ?? false;
   const retryPayment = () => {
     navigate(eventPayment ? "/events" : "/menu", { replace: true });
   };
@@ -166,6 +173,16 @@ const FlutterwaveReturnPage = () => {
               <Button onClick={returnToMenu} className="mt-6 bg-sheraton-gold text-sheraton-navy hover:bg-sheraton-gold/90">
                 Return to Menu
               </Button>
+            </>
+          )}
+
+          {result.status === "review" && (
+            <>
+              <AlertCircle className="mx-auto h-12 w-12 text-amber-600" />
+              <h1 className="mt-5 text-2xl font-semibold text-sheraton-navy">Payment received — review required</h1>
+              <p className="mt-2 text-muted-foreground">Your payment was verified, but the available ticket capacity changed before confirmation. The event team must resolve this booking before tickets are issued.</p>
+              <div className="mt-6 rounded-lg bg-sheraton-cream p-4"><p className="text-sm text-muted-foreground">Order Number</p><p className="mt-1 text-2xl font-bold text-sheraton-navy">{result.orderNumber}</p></div>
+              <Button onClick={returnToMenu} className="mt-6 bg-sheraton-gold text-sheraton-navy hover:bg-sheraton-gold/90">Return to Events</Button>
             </>
           )}
 
