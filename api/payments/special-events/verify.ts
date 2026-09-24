@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { verifyHospitalityEventPayment } from "../../../server/routes/hospitalityEvents.js";
+import { verifySpecialEventPayment } from "../../../server/routes/specialEvents.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).end();
-  return verifyHospitalityEventPayment(req as never, res as never);
+  return verifySpecialEventPayment(req as never, res as never);
 }

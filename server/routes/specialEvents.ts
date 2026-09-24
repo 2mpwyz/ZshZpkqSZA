@@ -4,13 +4,13 @@ import type { RequestHandler } from "express";
 const flutterwaveBaseUrl = "https://api.flutterwave.com/v3";
 const flutterwaveReturnPath = "/checkout/flutterwave-return";
 
-export class HospitalityEventPaymentError extends Error {
+export class SpecialEventPaymentError extends Error {
   constructor(message: string, readonly status = 400) {
     super(message);
   }
 }
 
-type HospitalityBooking = {
+type SpecialBooking = {
   id: string;
   user_id: string;
   event_id: string;
@@ -25,7 +25,7 @@ type HospitalityBooking = {
   payment_status: string;
 };
 
-type HospitalityPaymentAttempt = {
+type SpecialPaymentAttempt = {
   booking_id: string;
   tx_ref: string;
   amount: number | string;
@@ -75,42 +75,42 @@ const restHeaders = (token: string, anonKey: string, json = false) => ({
 });
 
 const getBooking = async (bookingId: string, authorization?: string) => {
-  if (!authorization?.startsWith("Bearer ")) throw new HospitalityEventPaymentError("Missing authenticated session", 401);
+  if (!authorization?.startsWith("Bearer ")) throw new SpecialEventPaymentError("Missing authenticated session", 401);
   const { supabaseUrl, supabaseAnonKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
     headers: restHeaders(authorization.slice("Bearer ".length), supabaseAnonKey),
   });
   if (!response.ok) throw new Error("Unable to retrieve event booking");
-  const [booking] = (await response.json()) as HospitalityBooking[];
-  if (!booking) throw new HospitalityEventPaymentError("Event booking not found", 404);
+  const [booking] = (await response.json()) as SpecialBooking[];
+  if (!booking) throw new SpecialEventPaymentError("Event booking not found", 404);
   return booking;
 };
 
 const getBookingAsService = async (bookingId: string) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
     headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey),
   });
   if (!response.ok) throw new Error("Unable to retrieve event booking");
-  const [booking] = (await response.json()) as HospitalityBooking[];
+  const [booking] = (await response.json()) as SpecialBooking[];
   if (!booking) throw new Error("Event booking not found");
   return booking;
 };
 
 const getPaymentAttemptAsService = async (txRef: string) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=*`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=*`, {
     headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey),
   });
   if (!response.ok) throw new Error("Unable to retrieve event payment attempt");
-  const [attempt] = (await response.json()) as HospitalityPaymentAttempt[];
-  if (!attempt) throw new HospitalityEventPaymentError("Event payment attempt not found", 404);
+  const [attempt] = (await response.json()) as SpecialPaymentAttempt[];
+  if (!attempt) throw new SpecialEventPaymentError("Event payment attempt not found", 404);
   return attempt;
 };
 
 const updateBookingAsService = async (bookingId: string, values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_bookings?id=eq.${encodeURIComponent(bookingId)}`, {
     method: "PATCH",
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
     body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
@@ -120,7 +120,7 @@ const updateBookingAsService = async (bookingId: string, values: Record<string, 
 
 const createPaymentAttempt = async (values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts`, {
     method: "POST",
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
     body: JSON.stringify(values),
@@ -130,7 +130,7 @@ const createPaymentAttempt = async (values: Record<string, unknown>) => {
 
 const updatePaymentAttempt = async (txRef: string, values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}`, {
     method: "PATCH",
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
     body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
@@ -150,7 +150,7 @@ const verifyTransaction = async (transactionId: string) => {
 
 const confirmBookingAsService = async (bookingId: string, transactionId: string) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/confirm_hospitality_event_payment`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/confirm_special_event_payment`, {
     method: "POST",
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=representation" },
     body: JSON.stringify({ target_booking_id: bookingId, target_transaction_id: transactionId }),
@@ -161,24 +161,24 @@ const confirmBookingAsService = async (bookingId: string, transactionId: string)
   return confirmation;
 };
 
-const assertTransactionMatches = (transaction: FlutterwaveTransaction, attempt: HospitalityPaymentAttempt, booking: HospitalityBooking) => {
+const assertTransactionMatches = (transaction: FlutterwaveTransaction, attempt: SpecialPaymentAttempt, booking: SpecialBooking) => {
   if (transaction.status !== "successful" || transaction.tx_ref !== attempt.tx_ref) throw new Error("Event payment status does not match the booking");
   if (Number(transaction.amount) !== Number(booking.total_amount) || transaction.currency !== booking.currency) throw new Error("Event payment amount does not match the booking");
   if (transaction.meta?.booking_id !== booking.id) throw new Error("Event payment metadata does not match the booking");
 };
 
-export const prepareHospitalityEventPayment: RequestHandler = async (req, res) => {
+export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
   let txRef: string | undefined;
   try {
     const { bookingId } = req.body as { bookingId?: string };
-    if (!bookingId) throw new HospitalityEventPaymentError("Booking ID is required");
+    if (!bookingId) throw new SpecialEventPaymentError("Booking ID is required");
     const booking = await getBooking(bookingId, req.headers.authorization);
-    if (booking.payment_status === "paid") throw new HospitalityEventPaymentError("This event booking has already been paid", 409);
-    if (booking.status !== "pending") throw new HospitalityEventPaymentError("This event booking is no longer pending", 409);
-    if (Number(booking.total_amount) <= 0) throw new HospitalityEventPaymentError("This booking does not require online payment", 400);
+    if (booking.payment_status === "paid") throw new SpecialEventPaymentError("This event booking has already been paid", 409);
+    if (booking.status !== "pending") throw new SpecialEventPaymentError("This event booking is no longer pending", 409);
+    if (Number(booking.total_amount) <= 0) throw new SpecialEventPaymentError("This booking does not require online payment", 400);
 
     const { secretKey } = getConfiguration();
-    txRef = `hospitality-event-${booking.order_number}-${randomUUID()}`;
+    txRef = `special-event-${booking.order_number}-${randomUUID()}`;
     await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
     const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
       method: "POST",
@@ -191,7 +191,7 @@ export const prepareHospitalityEventPayment: RequestHandler = async (req, res) =
         redirect_url: getReturnUrl(),
         customer: { email: booking.guest_email, name: `${booking.guest_first_name} ${booking.guest_last_name}`.trim(), phonenumber: booking.guest_phone },
         meta: { booking_id: booking.id, order_number: booking.order_number },
-        customizations: { title: "Hospitality Events", description: `Event booking ${booking.order_number}` },
+        customizations: { title: "Special Events", description: `Event booking ${booking.order_number}` },
       }),
     });
     const payload = await response.json() as { status?: string; data?: { link?: string } };
@@ -200,11 +200,11 @@ export const prepareHospitalityEventPayment: RequestHandler = async (req, res) =
     return res.json({ paymentUrl: payload.data.link, txRef, bookingId: booking.id });
   } catch (error) {
     if (txRef) await updatePaymentAttempt(txRef, { status: "failed", failure_reason: error instanceof Error ? error.message : "Unable to prepare event payment" }).catch(() => undefined);
-    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
+    return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
   }
 };
 
-export const verifyHospitalityEventPayment: RequestHandler = async (req, res) => {
+export const verifySpecialEventPayment: RequestHandler = async (req, res) => {
   try {
     const { transactionId, txRef } = req.body as { transactionId?: string | number; txRef?: string };
     if (!transactionId || !txRef) return res.status(400).json({ error: "Event payment verification details are required" });
@@ -216,11 +216,11 @@ export const verifyHospitalityEventPayment: RequestHandler = async (req, res) =>
     await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "completed", completed_at: new Date().toISOString() });
     return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: "paid" });
   } catch (error) {
-    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to verify event payment" });
+    return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to verify event payment" });
   }
 };
 
-export const cancelHospitalityEventPayment: RequestHandler = async (req, res) => {
+export const cancelSpecialEventPayment: RequestHandler = async (req, res) => {
   try {
     const { txRef, status } = req.body as { txRef?: string; status?: "cancelled" | "failed" };
     if (!txRef || (status !== "cancelled" && status !== "failed")) return res.status(400).json({ error: "Event payment outcome is invalid" });
@@ -230,11 +230,11 @@ export const cancelHospitalityEventPayment: RequestHandler = async (req, res) =>
     await updateBookingAsService(attempt.booking_id, { payment_status: status, status: "cancelled" });
     return res.json({ bookingId: attempt.booking_id, paymentStatus: status });
   } catch (error) {
-    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to record event payment cancellation" });
+    return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to record event payment cancellation" });
   }
 };
 
-export const handleHospitalityEventWebhook: RequestHandler = async (req, res) => {
+export const handleSpecialEventWebhook: RequestHandler = async (req, res) => {
   const { secretHash } = getConfiguration();
   if (req.headers["verif-hash"] !== secretHash) return res.status(401).end();
   const payload = req.body as { event?: string; data?: { id?: string | number; tx_ref?: string } };
@@ -248,7 +248,7 @@ export const handleHospitalityEventWebhook: RequestHandler = async (req, res) =>
     await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "completed", completed_at: new Date().toISOString() });
     return res.status(200).end();
   } catch (error) {
-    console.error("Hospitality event webhook processing error", error);
+    console.error("Special event webhook processing error", error);
     return res.status(500).end();
   }
 };

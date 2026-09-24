@@ -1,8 +1,8 @@
-export type HospitalityEventStatus = "draft" | "published" | "cancelled" | "completed";
-export type HospitalityEventBookingStatus = "pending" | "confirmed" | "cancelled" | "refunded";
-export type HospitalityEventPaymentStatus = "pending" | "paid" | "failed" | "cancelled";
+export type SpecialEventStatus = "draft" | "published" | "cancelled" | "completed";
+export type SpecialEventBookingStatus = "pending" | "confirmed" | "cancelled" | "refunded";
+export type SpecialEventPaymentStatus = "pending" | "paid" | "failed" | "cancelled";
 
-export interface HospitalityEvent {
+export interface SpecialEvent {
   id: string;
   title: string;
   description: string | null;
@@ -19,14 +19,14 @@ export interface HospitalityEvent {
   featured: boolean;
   rating: number;
   host_name: string | null;
-  status: HospitalityEventStatus;
+  status: SpecialEventStatus;
   organizer_id: string;
   created_by: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface HospitalityEventBooking {
+export interface SpecialEventBooking {
   id: string;
   event_id: string;
   order_number: string;
@@ -42,16 +42,16 @@ export interface HospitalityEventBooking {
   discount_amount: number;
   total_amount: number;
   currency: string;
-  status: HospitalityEventBookingStatus;
-  payment_status: HospitalityEventPaymentStatus;
+  status: SpecialEventBookingStatus;
+  payment_status: SpecialEventPaymentStatus;
   confirmation_number: string;
   ticket_code: string | null;
   created_at: string;
   updated_at: string;
-  event?: HospitalityEvent;
+  event?: SpecialEvent;
 }
 
-export interface HospitalityEventPlan {
+export interface SpecialEventPlan {
   id: string;
   user_id: string;
   title: string;

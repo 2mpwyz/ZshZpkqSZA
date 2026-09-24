@@ -9,15 +9,15 @@ import { Badge } from "../ui/badge";
 import { Progress } from "../ui/progress";
 import { Calendar, MapPin, User, Phone, Mail, Receipt, CheckCircle, AlertCircle, CreditCard, Shield, ArrowLeft, ArrowRight, Minus, Plus, X, Ticket, Award, Download } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { formatEventDate, type HospitalityEvent } from "../../lib/events";
+import { formatEventDate, type SpecialEvent } from "../../lib/events";
 
-type CheckoutEvent = HospitalityEvent & { quantity: number };
+type CheckoutEvent = SpecialEvent & { quantity: number };
 
 type Props = {
   isOpen: boolean;
   onClose: () => void;
   cart: Record<string, number>;
-  events: HospitalityEvent[];
+  events: SpecialEvent[];
   onUpdateCart: (eventId: string, quantity: number) => void;
   onRemoveFromCart: (eventId: string) => void;
   onClearCart: () => void;
@@ -94,7 +94,7 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
       navigate(`/login?returnTo=${encodeURIComponent("/events")}`);
       return;
     }
-    const response = await fetch("/api/payments/hospitality-events/session", {
+    const response = await fetch("/api/payments/special-events/session", {
       method: "POST",
       headers: { Authorization: `Bearer ${sessionData.session.access_token}`, "content-type": "application/json" },
       body: JSON.stringify({ bookingId }),
@@ -115,7 +115,7 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
         navigate(`/login?returnTo=${encodeURIComponent("/events")}`);
         return;
       }
-      const { data: bookingResult, error: bookingError } = await supabase.rpc("create_hospitality_event_booking", {
+      const { data: bookingResult, error: bookingError } = await supabase.rpc("create_special_event_booking", {
         target_event_id: selectedEvent.id,
         target_quantity: selectedEvent.quantity,
         guest_first_name: guestInfo.firstName.trim(),
@@ -127,7 +127,7 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
       if (bookingError || !bookingResult?.[0]) throw bookingError || new Error("Unable to create event booking.");
       const booking = bookingResult[0] as { booking_id: string; total_amount: number; currency: string };
       if (Number(booking.total_amount) === 0) {
-        const { data: freeResult, error: freeError } = await supabase.rpc("confirm_free_hospitality_event_booking", { target_booking_id: booking.booking_id });
+        const { data: freeResult, error: freeError } = await supabase.rpc("confirm_free_special_event_booking", { target_booking_id: booking.booking_id });
         if (freeError || !freeResult?.[0]) throw freeError || new Error("Unable to confirm free event booking.");
         setConfirmation({ confirmationNumber: freeResult[0].confirmation_number, ticketCode: freeResult[0].ticket_code, eventTitle: selectedEvent.title, quantity: selectedEvent.quantity, total: 0, currency: booking.currency });
         setStep("confirmation");
@@ -137,7 +137,7 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
       }
       await startHostedPayment(booking.booking_id);
     } catch (error) {
-      console.error("Unable to book hospitality event", error);
+      console.error("Unable to book special event", error);
       setErrorMessage(error instanceof Error ? error.message : "Unable to complete event booking.");
     } finally {
       setIsProcessing(false);

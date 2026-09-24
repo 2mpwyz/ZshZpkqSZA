@@ -43,12 +43,12 @@ const FlutterwaveReturnPage = () => {
       const transactionId = searchParams.get("transaction_id");
       const txRef = searchParams.get("tx_ref");
       const status = searchParams.get("status");
-      const eventPayment = txRef?.startsWith("hospitality-event-") ?? false;
+      const eventPayment = txRef?.startsWith("special-event-") ?? false;
 
       if (status !== "successful") {
         const { data: { session } } = await supabase.auth.getSession();
         if (txRef && session?.access_token) {
-          fetch(eventPayment ? "/api/payments/hospitality-events/cancel" : "/api/payments/flutterwave/cancel", {
+          fetch(eventPayment ? "/api/payments/special-events/cancel" : "/api/payments/flutterwave/cancel", {
             method: "POST",
             headers: {
               Authorization: `Bearer ${session.access_token}`,
@@ -95,7 +95,7 @@ const FlutterwaveReturnPage = () => {
       }
 
       try {
-        const response = await fetch(eventPayment ? "/api/payments/hospitality-events/verify" : "/api/payments/flutterwave/verify", {
+        const response = await fetch(eventPayment ? "/api/payments/special-events/verify" : "/api/payments/flutterwave/verify", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
@@ -132,7 +132,7 @@ const FlutterwaveReturnPage = () => {
     };
   }, [searchParams]);
 
-  const eventPayment = searchParams.get("tx_ref")?.startsWith("hospitality-event-") ?? false;
+  const eventPayment = searchParams.get("tx_ref")?.startsWith("special-event-") ?? false;
   const retryPayment = () => {
     navigate(eventPayment ? "/events" : "/menu", { replace: true });
   };
