@@ -7,6 +7,12 @@ import {
   handleFlutterwaveWebhook,
   verifyFlutterwavePayment,
 } from "./routes/flutterwave.js";
+import {
+  cancelHospitalityEventPayment,
+  handleHospitalityEventWebhook,
+  prepareHospitalityEventPayment,
+  verifyHospitalityEventPayment,
+} from "./routes/hospitalityEvents.js";
 
 export function createServer() {
   const app = express();
@@ -26,6 +32,10 @@ export function createServer() {
   app.post("/api/payments/flutterwave/cancel", cancelFlutterwavePayment);
   app.post("/api/payments/flutterwave/verify", verifyFlutterwavePayment);
   app.post("/api/payments/flutterwave/webhook", handleFlutterwaveWebhook);
+  app.post("/api/payments/hospitality-events/session", prepareHospitalityEventPayment);
+  app.post("/api/payments/hospitality-events/verify", verifyHospitalityEventPayment);
+  app.post("/api/payments/hospitality-events/cancel", cancelHospitalityEventPayment);
+  app.post("/api/payments/hospitality-events/webhook", handleHospitalityEventWebhook);
 
   return app;
 }

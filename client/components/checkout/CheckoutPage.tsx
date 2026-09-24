@@ -301,7 +301,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
           currency,
           first_name: customerInfo.firstName.trim(),
           last_name: customerInfo.lastName.trim(),
-          email: customerInfo.email.trim(),
+          email: customerInfo.email.trim() || null,
           phone: customerInfo.phone.trim(),
           room_number: customerInfo.roomNumber.trim() || null,
           delivery_address: customerInfo.deliveryAddress.trim() || null,
@@ -557,7 +557,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
       </div>
 
       <div>
-        <label className="block text-sm font-medium mb-2">Email *</label>
+        <label className="block text-sm font-medium mb-2">Email (optional for cash or room charge)</label>
         <Input
           type="email"
           value={customerInfo.email}
@@ -627,7 +627,6 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({
           disabled={
             !customerInfo.firstName ||
             !customerInfo.lastName ||
-            !customerInfo.email ||
             !customerInfo.phone ||
             (orderType === "room-service" && !customerInfo.roomNumber) ||
             (orderType === "delivery" && !customerInfo.deliveryAddress)

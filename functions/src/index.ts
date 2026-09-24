@@ -332,13 +332,13 @@ export const generateAndSendInvoicePDF = onRequest({ region: "us-central1", time
       logStage("b2", correlation, { invoiceId, organizationId: document.organizationId, action: "reuse" });
     }
     const publicUrl = process.env.B2_PUBLIC_URL ? `${process.env.B2_PUBLIC_URL.replace(/\/$/, "")}/${storageKey}` : null;
-    activeStage = "receipt_update";
-    logStage("receipt_update", correlation, { invoiceId, organizationId: document.organizationId });
-    await updateInvoice(client, invoiceId, { receipt_url: publicUrl, receipt_storage_key: storageKey, receipt_delivery_status: "queued", receipt_delivery_error: null, receipt_delivery_attempted_at: new Date().toISOString() });
     if (deliveryState?.receipt_delivery_status === "sent") {
       response.json({ ok: true, invoiceId, storageKey, skippedEmail: true, correlationId: correlation });
       return;
     }
+    activeStage = "receipt_update";
+    logStage("receipt_update", correlation, { invoiceId, organizationId: document.organizationId });
+    await updateInvoice(client, invoiceId, { receipt_url: publicUrl, receipt_storage_key: storageKey, receipt_delivery_status: "queued", receipt_delivery_error: null, receipt_delivery_attempted_at: new Date().toISOString() });
     if (!document.recipient) {
       const deliveryMessage = "Receipt PDF stored; customer email is missing or invalid";
       await updateInvoice(client, invoiceId, { receipt_delivery_status: "skipped", receipt_delivery_error: deliveryMessage, receipt_delivery_attempted_at: new Date().toISOString() });

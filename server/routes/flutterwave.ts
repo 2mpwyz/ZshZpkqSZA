@@ -34,7 +34,7 @@ type MenuOrder = {
   payment_reference?: string | null;
   flutterwave_transaction_id?: string | null;
   total_amount: number | string;
-  email: string;
+  email: string | null;
   first_name: string;
   last_name: string;
   phone: string;
@@ -256,6 +256,9 @@ export const prepareFlutterwaveHostedSession = async (
     const order = await getAuthenticatedOrder(orderId, authorization);
     if (order.payment_status === "paid") {
       throw new FlutterwaveRequestError("This order has already been paid", 409);
+    }
+    if (!order.email?.trim()) {
+      throw new FlutterwaveRequestError("An email address is required for online payment.", 400);
     }
 
     const { secretKey } = getConfiguration();
