@@ -2,14 +2,15 @@ import path from "path";
 import * as express from "express";
 import express__default from "express";
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 const handleDemo = (req, res) => {
   const response = {
     message: "Hello from Express server"
   };
   res.status(200).json(response);
 };
-const flutterwaveBaseUrl = "https://api.flutterwave.com/v3";
-const flutterwaveReturnPath = "/checkout/flutterwave-return";
+const flutterwaveBaseUrl$1 = "https://api.flutterwave.com/v3";
+const flutterwaveReturnPath$1 = "/checkout/flutterwave-return";
 class FlutterwaveRequestError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -20,12 +21,12 @@ const getFlutterwaveReturnUrl = () => {
   const returnUrl = process.env.FLUTTERWAVE_RETURN_URL;
   if (!returnUrl) throw new Error("Flutterwave return URL is not configured");
   const parsedUrl = new URL(returnUrl);
-  if (parsedUrl.protocol !== "https:" || parsedUrl.pathname !== flutterwaveReturnPath) {
+  if (parsedUrl.protocol !== "https:" || parsedUrl.pathname !== flutterwaveReturnPath$1) {
     throw new Error("Flutterwave return URL must use HTTPS and target the payment return route");
   }
   return parsedUrl.toString();
 };
-const getConfiguration = () => {
+const getConfiguration$1 = () => {
   const secretKey = process.env.FLUTTERWAVE_SECRET_KEY;
   const secretHash = process.env.FLUTTERWAVE_SECRET_HASH;
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -48,7 +49,7 @@ const getAuthenticatedOrder = async (orderId, authorization) => {
   if (!authorization?.startsWith("Bearer ")) {
     throw new Error("Missing authenticated session");
   }
-  const { supabaseUrl, supabaseAnonKey } = getConfiguration();
+  const { supabaseUrl, supabaseAnonKey } = getConfiguration$1();
   const response = await fetch(
     `${supabaseUrl}/rest/v1/menu_orders?id=eq.${encodeURIComponent(orderId)}&select=*`,
     {
@@ -64,7 +65,7 @@ const getAuthenticatedOrder = async (orderId, authorization) => {
   return order;
 };
 const getOrderByPaymentReference = async (paymentReference) => {
-  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration$1();
   const response = await fetch(
     `${supabaseUrl}/rest/v1/menu_orders?payment_reference=eq.${encodeURIComponent(paymentReference)}&select=*`,
     {
@@ -80,7 +81,7 @@ const getOrderByPaymentReference = async (paymentReference) => {
   return order;
 };
 const updatePaymentAttemptAsService = async (txRef, values) => {
-  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration$1();
   const response = await fetch(
     `${supabaseUrl}/rest/v1/menu_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}`,
     {
@@ -97,7 +98,7 @@ const updatePaymentAttemptAsService = async (txRef, values) => {
   if (!response.ok) throw new Error("Unable to update payment attempt");
 };
 const createPaymentAttemptAsService = async (values) => {
-  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration$1();
   const response = await fetch(`${supabaseUrl}/rest/v1/menu_payment_attempts`, {
     method: "POST",
     headers: {
@@ -111,7 +112,7 @@ const createPaymentAttemptAsService = async (values) => {
   if (!response.ok) throw new Error("Unable to create payment attempt");
 };
 const updateOrderAsService = async (orderId, values) => {
-  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration$1();
   const response = await fetch(
     `${supabaseUrl}/rest/v1/menu_orders?id=eq.${encodeURIComponent(orderId)}`,
     {
@@ -134,10 +135,10 @@ const getPaymentOptions = (paymentMethod, currency) => {
   }
   return "mobilemoneyuganda";
 };
-const verifyTransaction = async (transactionId) => {
-  const { secretKey } = getConfiguration();
+const verifyTransaction$1 = async (transactionId) => {
+  const { secretKey } = getConfiguration$1();
   const response = await fetch(
-    `${flutterwaveBaseUrl}/transactions/${encodeURIComponent(transactionId)}/verify`,
+    `${flutterwaveBaseUrl$1}/transactions/${encodeURIComponent(transactionId)}/verify`,
     { headers: { Authorization: `Bearer ${secretKey}` } }
   );
   const payload = await response.json();
@@ -151,7 +152,7 @@ const confirmPayment = async (transaction, transactionReference, order) => {
   if (metadataOrderId !== order.id) {
     throw new Error("Payment metadata does not match the order");
   }
-  const { defaultCurrency } = getConfiguration();
+  const { defaultCurrency } = getConfiguration$1();
   const currency = String(order.currency || defaultCurrency).toUpperCase();
   if (transaction.status !== "successful" || transaction.tx_ref !== transactionReference || Number(transaction.amount) !== Number(order.total_amount) || transaction.currency !== currency) {
     throw new Error("Payment verification data does not match the order");
@@ -184,7 +185,7 @@ const prepareFlutterwaveHostedSession = async ({ orderId, paymentAmount, payment
     if (!order.email?.trim()) {
       throw new FlutterwaveRequestError("An email address is required for online payment.", 400);
     }
-    const { secretKey } = getConfiguration();
+    const { secretKey } = getConfiguration$1();
     const amount = Number(paymentAmount);
     const currency = String(paymentCurrency).toUpperCase();
     await updateOrderAsService(order.id, {
@@ -202,7 +203,7 @@ const prepareFlutterwaveHostedSession = async ({ orderId, paymentAmount, payment
     });
     const paymentOptions = getPaymentOptions(order.payment_method, currency);
     const returnUrl = getFlutterwaveReturnUrl();
-    const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
+    const response = await fetch(`${flutterwaveBaseUrl$1}/payments`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secretKey}`,
@@ -297,7 +298,7 @@ const verifyFlutterwavePayment = async (req, res) => {
     }
     const order = await getOrderByPaymentReference(txRef);
     await getAuthenticatedOrder(order.id, req.headers.authorization);
-    const transaction = await verifyTransaction(String(transactionId));
+    const transaction = await verifyTransaction$1(String(transactionId));
     const result = await confirmPayment(transaction, txRef, order);
     return res.json({
       orderId: result.order.id,
@@ -313,7 +314,7 @@ const verifyFlutterwavePayment = async (req, res) => {
 };
 const handleFlutterwaveWebhook = async (req, res) => {
   const signature = req.headers["verif-hash"];
-  const { secretHash } = getConfiguration();
+  const { secretHash } = getConfiguration$1();
   if (!signature || signature !== secretHash) {
     return res.status(401).end();
   }
@@ -324,13 +325,211 @@ const handleFlutterwaveWebhook = async (req, res) => {
   try {
     const order = await getOrderByPaymentReference(payload.data.tx_ref);
     await confirmPayment(
-      await verifyTransaction(String(payload.data.id)),
+      await verifyTransaction$1(String(payload.data.id)),
       payload.data.tx_ref,
       order
     );
     return res.status(200).end();
   } catch (error) {
     console.error("Flutterwave webhook processing error", error);
+    return res.status(500).end();
+  }
+};
+const flutterwaveBaseUrl = "https://api.flutterwave.com/v3";
+const flutterwaveReturnPath = "/checkout/flutterwave-return";
+class HospitalityEventPaymentError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+const getConfiguration = () => {
+  const secretKey = process.env.FLUTTERWAVE_SECRET_KEY;
+  const secretHash = process.env.FLUTTERWAVE_SECRET_HASH;
+  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!secretKey || !secretHash || !supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+    throw new Error("Event payment configuration is incomplete");
+  }
+  return { secretKey, secretHash, supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey };
+};
+const getReturnUrl = () => {
+  const value = process.env.FLUTTERWAVE_RETURN_URL;
+  if (!value) throw new Error("Flutterwave return URL is not configured");
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:" || parsed.pathname !== flutterwaveReturnPath) {
+    throw new Error("Flutterwave return URL must use HTTPS and target the payment return route");
+  }
+  return parsed.toString();
+};
+const restHeaders = (token, anonKey, json = false) => ({
+  apikey: anonKey,
+  Authorization: `Bearer ${token}`,
+  ...json ? { "content-type": "application/json" } : {}
+});
+const getBooking = async (bookingId, authorization) => {
+  if (!authorization?.startsWith("Bearer ")) throw new HospitalityEventPaymentError("Missing authenticated session", 401);
+  const { supabaseUrl, supabaseAnonKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
+    headers: restHeaders(authorization.slice("Bearer ".length), supabaseAnonKey)
+  });
+  if (!response.ok) throw new Error("Unable to retrieve event booking");
+  const [booking] = await response.json();
+  if (!booking) throw new HospitalityEventPaymentError("Event booking not found", 404);
+  return booking;
+};
+const getBookingAsService = async (bookingId) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}&select=*`, {
+    headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey)
+  });
+  if (!response.ok) throw new Error("Unable to retrieve event booking");
+  const [booking] = await response.json();
+  if (!booking) throw new Error("Event booking not found");
+  return booking;
+};
+const getPaymentAttemptAsService = async (txRef) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=*`, {
+    headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey)
+  });
+  if (!response.ok) throw new Error("Unable to retrieve event payment attempt");
+  const [attempt] = await response.json();
+  if (!attempt) throw new HospitalityEventPaymentError("Event payment attempt not found", 404);
+  return attempt;
+};
+const updateBookingAsService = async (bookingId, values) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_bookings?id=eq.${encodeURIComponent(bookingId)}`, {
+    method: "PATCH",
+    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
+    body: JSON.stringify({ ...values, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+  });
+  if (!response.ok) throw new Error("Unable to update event booking");
+};
+const createPaymentAttempt = async (values) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts`, {
+    method: "POST",
+    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
+    body: JSON.stringify(values)
+  });
+  if (!response.ok) throw new Error("Unable to create event payment attempt");
+};
+const updatePaymentAttempt = async (txRef, values) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/hospitality_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}`, {
+    method: "PATCH",
+    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
+    body: JSON.stringify({ ...values, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
+  });
+  if (!response.ok) throw new Error("Unable to update event payment attempt");
+};
+const verifyTransaction = async (transactionId) => {
+  const { secretKey } = getConfiguration();
+  const response = await fetch(`${flutterwaveBaseUrl}/transactions/${encodeURIComponent(transactionId)}/verify`, {
+    headers: { Authorization: `Bearer ${secretKey}` }
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.status !== "success" || !payload.data) throw new Error("Event payment could not be verified");
+  return payload.data;
+};
+const confirmBookingAsService = async (bookingId, transactionId) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/confirm_hospitality_event_payment`, {
+    method: "POST",
+    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=representation" },
+    body: JSON.stringify({ target_booking_id: bookingId, target_transaction_id: transactionId })
+  });
+  if (!response.ok) throw new Error("Unable to confirm event booking");
+  const [confirmation] = await response.json();
+  if (!confirmation) throw new Error("Event booking confirmation was not returned");
+  return confirmation;
+};
+const assertTransactionMatches = (transaction, attempt, booking) => {
+  if (transaction.status !== "successful" || transaction.tx_ref !== attempt.tx_ref) throw new Error("Event payment status does not match the booking");
+  if (Number(transaction.amount) !== Number(booking.total_amount) || transaction.currency !== booking.currency) throw new Error("Event payment amount does not match the booking");
+  if (transaction.meta?.booking_id !== booking.id) throw new Error("Event payment metadata does not match the booking");
+};
+const prepareHospitalityEventPayment = async (req, res) => {
+  let txRef;
+  try {
+    const { bookingId } = req.body;
+    if (!bookingId) throw new HospitalityEventPaymentError("Booking ID is required");
+    const booking = await getBooking(bookingId, req.headers.authorization);
+    if (booking.payment_status === "paid") throw new HospitalityEventPaymentError("This event booking has already been paid", 409);
+    if (booking.status !== "pending") throw new HospitalityEventPaymentError("This event booking is no longer pending", 409);
+    if (Number(booking.total_amount) <= 0) throw new HospitalityEventPaymentError("This booking does not require online payment", 400);
+    const { secretKey } = getConfiguration();
+    txRef = `hospitality-event-${booking.order_number}-${randomUUID()}`;
+    await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secretKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        tx_ref: txRef,
+        amount: Number(booking.total_amount),
+        currency: booking.currency,
+        payment_options: "card",
+        redirect_url: getReturnUrl(),
+        customer: { email: booking.guest_email, name: `${booking.guest_first_name} ${booking.guest_last_name}`.trim(), phonenumber: booking.guest_phone },
+        meta: { booking_id: booking.id, order_number: booking.order_number },
+        customizations: { title: "Hospitality Events", description: `Event booking ${booking.order_number}` }
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.status !== "success" || !payload.data?.link) throw new Error("Unable to create secure event payment page");
+    await updatePaymentAttempt(txRef, { status: "redirected", payment_url: payload.data.link });
+    return res.json({ paymentUrl: payload.data.link, txRef, bookingId: booking.id });
+  } catch (error) {
+    if (txRef) await updatePaymentAttempt(txRef, { status: "failed", failure_reason: error instanceof Error ? error.message : "Unable to prepare event payment" }).catch(() => void 0);
+    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
+  }
+};
+const verifyHospitalityEventPayment = async (req, res) => {
+  try {
+    const { transactionId, txRef } = req.body;
+    if (!transactionId || !txRef) return res.status(400).json({ error: "Event payment verification details are required" });
+    const attempt = await getPaymentAttemptAsService(txRef);
+    const booking = await getBooking(attempt.booking_id, req.headers.authorization);
+    const transaction = await verifyTransaction(String(transactionId));
+    assertTransactionMatches(transaction, attempt, booking);
+    const confirmation = await confirmBookingAsService(booking.id, String(transaction.id));
+    await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "completed", completed_at: (/* @__PURE__ */ new Date()).toISOString() });
+    return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: "paid" });
+  } catch (error) {
+    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to verify event payment" });
+  }
+};
+const cancelHospitalityEventPayment = async (req, res) => {
+  try {
+    const { txRef, status } = req.body;
+    if (!txRef || status !== "cancelled" && status !== "failed") return res.status(400).json({ error: "Event payment outcome is invalid" });
+    const attempt = await getPaymentAttemptAsService(txRef);
+    await getBooking(attempt.booking_id, req.headers.authorization);
+    await updatePaymentAttempt(txRef, status === "cancelled" ? { status, cancelled_at: (/* @__PURE__ */ new Date()).toISOString() } : { status, failure_reason: "Flutterwave returned an unsuccessful payment status" });
+    await updateBookingAsService(attempt.booking_id, { payment_status: status, status: "cancelled" });
+    return res.json({ bookingId: attempt.booking_id, paymentStatus: status });
+  } catch (error) {
+    return res.status(error instanceof HospitalityEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to record event payment cancellation" });
+  }
+};
+const handleHospitalityEventWebhook = async (req, res) => {
+  const { secretHash } = getConfiguration();
+  if (req.headers["verif-hash"] !== secretHash) return res.status(401).end();
+  const payload = req.body;
+  if (payload.event !== "charge.completed" || !payload.data?.id || !payload.data.tx_ref) return res.status(200).end();
+  try {
+    const attempt = await getPaymentAttemptAsService(payload.data.tx_ref);
+    const booking = await getBookingAsService(attempt.booking_id);
+    const transaction = await verifyTransaction(String(payload.data.id));
+    assertTransactionMatches(transaction, attempt, booking);
+    await confirmBookingAsService(booking.id, String(transaction.id));
+    await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "completed", completed_at: (/* @__PURE__ */ new Date()).toISOString() });
+    return res.status(200).end();
+  } catch (error) {
+    console.error("Hospitality event webhook processing error", error);
     return res.status(500).end();
   }
 };
@@ -347,6 +546,10 @@ function createServer() {
   app2.post("/api/payments/flutterwave/cancel", cancelFlutterwavePayment);
   app2.post("/api/payments/flutterwave/verify", verifyFlutterwavePayment);
   app2.post("/api/payments/flutterwave/webhook", handleFlutterwaveWebhook);
+  app2.post("/api/payments/hospitality-events/session", prepareHospitalityEventPayment);
+  app2.post("/api/payments/hospitality-events/verify", verifyHospitalityEventPayment);
+  app2.post("/api/payments/hospitality-events/cancel", cancelHospitalityEventPayment);
+  app2.post("/api/payments/hospitality-events/webhook", handleHospitalityEventWebhook);
   return app2;
 }
 const app = createServer();
