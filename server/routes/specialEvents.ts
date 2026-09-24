@@ -23,11 +23,14 @@ type SpecialBooking = {
   currency: string;
   status: string;
   payment_status: string;
+  expires_at: string | null;
 };
 
 type SpecialPaymentAttempt = {
+  id: string;
   booking_id: string;
   tx_ref: string;
+  transaction_id: string | null;
   amount: number | string;
   currency: string;
   status: string;
@@ -99,23 +102,13 @@ const getBookingAsService = async (bookingId: string) => {
 
 const getPaymentAttemptAsService = async (txRef: string) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=*`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=id,booking_id,tx_ref,transaction_id,amount,currency,status`, {
     headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey),
   });
   if (!response.ok) throw new Error("Unable to retrieve event payment attempt");
   const [attempt] = (await response.json()) as SpecialPaymentAttempt[];
   if (!attempt) throw new SpecialEventPaymentError("Event payment attempt not found", 404);
   return attempt;
-};
-
-const updateBookingAsService = async (bookingId: string, values: Record<string, unknown>) => {
-  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_bookings?id=eq.${encodeURIComponent(bookingId)}`, {
-    method: "PATCH",
-    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
-    body: JSON.stringify({ ...values, updated_at: new Date().toISOString() }),
-  });
-  if (!response.ok) throw new Error("Unable to update event booking");
 };
 
 const createPaymentAttempt = async (values: Record<string, unknown>) => {
@@ -156,14 +149,19 @@ const confirmBookingAsService = async (bookingId: string, transactionId: string)
     body: JSON.stringify({ target_booking_id: bookingId, target_transaction_id: transactionId }),
   });
   if (!response.ok) throw new Error("Unable to confirm event booking");
-  const [confirmation] = await response.json() as Array<{ booking_id: string; confirmation_number: string; ticket_code: string; order_number: string }>;
+  const [confirmation] = await response.json() as Array<{ booking_id: string; confirmation_number: string; ticket_code: string | null; order_number: string; payment_status: string }>;
   if (!confirmation) throw new Error("Event booking confirmation was not returned");
   return confirmation;
 };
 
 const assertTransactionMatches = (transaction: FlutterwaveTransaction, attempt: SpecialPaymentAttempt, booking: SpecialBooking) => {
   if (transaction.status !== "successful" || transaction.tx_ref !== attempt.tx_ref) throw new Error("Event payment status does not match the booking");
-  if (Number(transaction.amount) !== Number(booking.total_amount) || transaction.currency !== booking.currency) throw new Error("Event payment amount does not match the booking");
+  if (
+    Number(transaction.amount) !== Number(booking.total_amount)
+    || Number(transaction.amount) !== Number(attempt.amount)
+    || transaction.currency.toUpperCase() !== booking.currency.toUpperCase()
+    || transaction.currency.toUpperCase() !== attempt.currency.toUpperCase()
+  ) throw new Error("Event payment amount does not match the booking");
   if (transaction.meta?.booking_id !== booking.id) throw new Error("Event payment metadata does not match the booking");
 };
 
@@ -174,7 +172,8 @@ export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
     if (!bookingId) throw new SpecialEventPaymentError("Booking ID is required");
     const booking = await getBooking(bookingId, req.headers.authorization);
     if (booking.payment_status === "paid") throw new SpecialEventPaymentError("This event booking has already been paid", 409);
-    if (booking.status !== "pending") throw new SpecialEventPaymentError("This event booking is no longer pending", 409);
+    if (booking.status !== "pending" || booking.payment_status !== "pending") throw new SpecialEventPaymentError("This event booking is no longer pending", 409);
+    if (booking.expires_at && new Date(booking.expires_at).getTime() <= Date.now()) throw new SpecialEventPaymentError("This ticket hold has expired. Start a new booking.", 409);
     if (Number(booking.total_amount) <= 0) throw new SpecialEventPaymentError("This booking does not require online payment", 400);
 
     const { secretKey } = getConfiguration();
@@ -212,9 +211,11 @@ export const verifySpecialEventPayment: RequestHandler = async (req, res) => {
     const booking = await getBooking(attempt.booking_id, req.headers.authorization);
     const transaction = await verifyTransaction(String(transactionId));
     assertTransactionMatches(transaction, attempt, booking);
+    if (attempt.status !== "successful" && attempt.status !== "manual_review") {
+      await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "verified" });
+    }
     const confirmation = await confirmBookingAsService(booking.id, String(transaction.id));
-    await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "completed", completed_at: new Date().toISOString() });
-    return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: "paid" });
+    return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: confirmation.payment_status });
   } catch (error) {
     return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to verify event payment" });
   }
@@ -226,8 +227,12 @@ export const cancelSpecialEventPayment: RequestHandler = async (req, res) => {
     if (!txRef || (status !== "cancelled" && status !== "failed")) return res.status(400).json({ error: "Event payment outcome is invalid" });
     const attempt = await getPaymentAttemptAsService(txRef);
     await getBooking(attempt.booking_id, req.headers.authorization);
-    await updatePaymentAttempt(txRef, status === "cancelled" ? { status, cancelled_at: new Date().toISOString() } : { status, failure_reason: "Flutterwave returned an unsuccessful payment status" });
-    await updateBookingAsService(attempt.booking_id, { payment_status: status, status: "cancelled" });
+    if (attempt.status === "successful" || attempt.status === "manual_review") {
+      return res.json({ bookingId: attempt.booking_id, paymentStatus: attempt.status });
+    }
+    if (attempt.status === "initiated" || attempt.status === "redirected") {
+      await updatePaymentAttempt(txRef, status === "cancelled" ? { status, cancelled_at: new Date().toISOString() } : { status, failure_reason: "Flutterwave returned an unsuccessful payment status" });
+    }
     return res.json({ bookingId: attempt.booking_id, paymentStatus: status });
   } catch (error) {
     return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to record event payment cancellation" });
@@ -244,8 +249,10 @@ export const handleSpecialEventWebhook: RequestHandler = async (req, res) => {
     const booking = await getBookingAsService(attempt.booking_id);
     const transaction = await verifyTransaction(String(payload.data.id));
     assertTransactionMatches(transaction, attempt, booking);
+    if (attempt.status !== "successful" && attempt.status !== "manual_review") {
+      await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "verified" });
+    }
     await confirmBookingAsService(booking.id, String(transaction.id));
-    await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "completed", completed_at: new Date().toISOString() });
     return res.status(200).end();
   } catch (error) {
     console.error("Special event webhook processing error", error);

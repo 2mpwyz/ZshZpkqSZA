@@ -20,6 +20,8 @@ import { Textarea } from "../components/ui/textarea";
 import { Switch } from "../components/ui/switch";
 import { Badge } from "../components/ui/badge";
 import EventCheckoutModal from "../components/events/EventCheckoutModal";
+import TicketQr from "../components/events/TicketQr";
+import { useFileUpload } from "../hooks/useFileUpload";
 import { supabase } from "../lib/supabase";
 import {
   formatEventDate,
@@ -27,6 +29,7 @@ import {
   type SpecialEvent,
   type SpecialEventBooking,
   type SpecialEventPlan,
+  type SpecialEventTicket,
 } from "../lib/events";
 
 type EventPlanForm = {
@@ -58,7 +61,9 @@ type EventForm = {
   price: string;
   currency: string;
   capacity: string;
+  maxTicketsPerOrder: string;
   hostName: string;
+  imageUrl: string;
   featured: boolean;
 };
 
@@ -73,7 +78,9 @@ const initialEventForm: EventForm = {
   price: "",
   currency: "UGX",
   capacity: "",
+  maxTicketsPerOrder: "10",
   hostName: "",
+  imageUrl: "",
   featured: false,
 };
 
@@ -82,13 +89,16 @@ const formatMoney = (value: number, currency: string) =>
 
 const EventsPage: React.FC = () => {
   const navigate = useNavigate();
+  const { uploadFile, isUploading } = useFileUpload();
   const [activeTab, setActiveTab] = useState("browse");
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [eventCart, setEventCart] = useState<Record<string, number>>({});
   const [showCheckout, setShowCheckout] = useState(false);
   const [events, setEvents] = useState<SpecialEvent[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [operationalEventIds, setOperationalEventIds] = useState<Set<string>>(new Set());
   const [bookings, setBookings] = useState<SpecialEventBooking[]>([]);
+  const [tickets, setTickets] = useState<SpecialEventTicket[]>([]);
   const [plans, setPlans] = useState<SpecialEventPlan[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -107,28 +117,39 @@ const EventsPage: React.FC = () => {
     if (!userId) {
       setIsSignedIn(false);
       setFavoriteIds(new Set());
+      setOperationalEventIds(new Set());
       setBookings([]);
+      setTickets([]);
       setPlans([]);
       setProfileRole(null);
       return;
     }
 
     setIsSignedIn(true);
-    const [profileResult, favoritesResult, bookingsResult, plansResult] = await Promise.all([
+    const [profileResult, favoritesResult, bookingsResult, plansResult, staffResult] = await Promise.all([
       supabase.from("user_profiles").select("role").eq("user_id", userId).maybeSingle(),
       supabase.from("special_event_favorites").select("event_id").eq("user_id", userId),
       supabase.from("special_event_bookings").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
       supabase.from("special_event_plans").select("*").eq("user_id", userId).order("event_date", { ascending: true }),
+      supabase.from("special_event_staff").select("event_id").eq("user_id", userId).eq("status", "active"),
     ]);
 
     if (profileResult.error) throw profileResult.error;
     if (favoritesResult.error) throw favoritesResult.error;
     if (bookingsResult.error) throw bookingsResult.error;
     if (plansResult.error) throw plansResult.error;
+    if (staffResult.error) throw staffResult.error;
 
+    const bookingRows = (bookingsResult.data || []) as SpecialEventBooking[];
+    const ticketResult = bookingRows.length
+      ? await supabase.from("special_event_tickets").select("id,booking_id,event_id,ticket_number,ticket_token,attendee_name,attendee_email,status,checked_in_at").in("booking_id", bookingRows.map((booking) => booking.id)).order("ticket_number")
+      : { data: [], error: null };
+    if (ticketResult.error) throw ticketResult.error;
     setProfileRole(profileResult.data?.role || null);
     setFavoriteIds(new Set((favoritesResult.data || []).map((favorite) => favorite.event_id)));
-    setBookings((bookingsResult.data || []) as SpecialEventBooking[]);
+    setOperationalEventIds(new Set((staffResult.data || []).map((staff) => staff.event_id)));
+    setBookings(bookingRows);
+    setTickets((ticketResult.data || []) as SpecialEventTicket[]);
     setPlans((plansResult.data || []) as SpecialEventPlan[]);
   };
 
@@ -204,6 +225,10 @@ const EventsPage: React.FC = () => {
       return;
     }
     const currentQuantity = eventCart[eventId] || 0;
+    if (currentQuantity >= event.max_tickets_per_order) {
+      setNotice(`You can book up to ${event.max_tickets_per_order} tickets per order.`);
+      return;
+    }
     if (currentQuantity + event.attendees_count >= event.capacity) {
       setNotice("This event has no more tickets available.");
       return;
@@ -226,6 +251,10 @@ const EventsPage: React.FC = () => {
     const existingEventIds = Object.keys(eventCart).filter((id) => id !== eventId);
     if (existingEventIds.length) {
       setNotice("Book one event at a time so each payment and ticket remains unambiguous.");
+      return;
+    }
+    if (quantity > event.max_tickets_per_order) {
+      setNotice(`You can book up to ${event.max_tickets_per_order} tickets per order.`);
       return;
     }
     if (event.attendees_count + quantity > event.capacity) {
@@ -325,6 +354,9 @@ const EventsPage: React.FC = () => {
         price: Number(eventForm.price),
         currency: eventForm.currency.trim().toUpperCase(),
         capacity: Number(eventForm.capacity),
+        ticket_type_capacity: Number(eventForm.capacity),
+        max_tickets_per_order: Number(eventForm.maxTicketsPerOrder),
+        image_url: eventForm.imageUrl || null,
         host_name: eventForm.hostName.trim() || null,
         featured: eventForm.featured,
         status: "published" as const,
@@ -350,7 +382,7 @@ const EventsPage: React.FC = () => {
   const editManagedEvent = (event: SpecialEvent) => {
     setEditingEventId(event.id);
     const toInput = (value: string) => new Date(value).toISOString().slice(0, 16);
-    setEventForm({ title: event.title, description: event.description || "", category: event.category || "Fine Dining", startsAt: toInput(event.starts_at), endsAt: toInput(event.ends_at), timezone: event.timezone, location: event.location, price: String(event.price), currency: event.currency, capacity: String(event.capacity), hostName: event.host_name || "", featured: event.featured });
+    setEventForm({ title: event.title, description: event.description || "", category: event.category || "Fine Dining", startsAt: toInput(event.starts_at), endsAt: toInput(event.ends_at), timezone: event.timezone, location: event.location, price: String(event.price), currency: event.currency, capacity: String(event.capacity), maxTicketsPerOrder: String(event.max_tickets_per_order || 10), hostName: event.host_name || "", imageUrl: event.image_url || "", featured: event.featured });
     setActiveTab("planning");
   };
 
@@ -394,7 +426,7 @@ const EventsPage: React.FC = () => {
     return (
       <div key={event.id} className={featured ? "relative bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow" : "bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow"}>
         {featured && <div className="absolute top-4 right-4 z-10"><Badge className="bg-sheraton-gold text-sheraton-navy">Featured</Badge></div>}
-        {featured && <div className="h-48 bg-gradient-to-br from-sheraton-cream to-sheraton-pearl flex items-center justify-center"><Award className="h-16 w-16 text-sheraton-gold" /></div>}
+        {featured && (event.image_url ? <img src={event.image_url} alt="" className="h-48 w-full object-cover" /> : <div className="h-48 bg-gradient-to-br from-sheraton-cream to-sheraton-pearl flex items-center justify-center"><Award className="h-16 w-16 text-sheraton-gold" /></div>)}
         <div className={featured ? "p-6" : "p-0"}>
           {featured ? (
             <div className="flex items-center gap-2 mb-2"><Star className="h-4 w-4 text-yellow-500 fill-current" /><span className="text-sm text-gray-600">{event.rating.toFixed(1)}</span><span className="text-sm text-gray-400">• {event.host_name || "Sheraton"}</span></div>
@@ -409,6 +441,7 @@ const EventsPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <span className={featured ? "text-lg font-semibold text-sheraton-navy" : "font-semibold text-sheraton-navy"}>{formatMoney(event.price, event.currency)}</span>
             <div className="flex gap-2">
+              {(canManageEvents || operationalEventIds.has(event.id)) && <Button variant="outline" size="sm" onClick={() => navigate(`/events/operations/${event.id}`)}>Operations</Button>}
               <Button variant="outline" size="sm" onClick={() => void toggleFavorite(event.id)} aria-label={isFavorite ? "Remove saved event" : "Save event"}><Heart className={`h-4 w-4 ${isFavorite ? "fill-sheraton-gold text-sheraton-gold" : ""}`} /></Button>
               <Button variant={featured ? "default" : "outline"} size="sm" className={featured ? "bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy" : ""} onClick={() => { setSelectedEvent(event.id); if (featured) addToEventCart(event.id); }}>{featured ? "Book Now" : "Details"}</Button>
             </div>
@@ -443,7 +476,7 @@ const EventsPage: React.FC = () => {
       <div className="grid md:grid-cols-2 gap-4">
         {bookings.map((booking) => {
           const event = getEvent(booking.event_id);
-          return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
+          return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p>{booking.payment_status === "manual_review" && <p className="mb-3 text-sm text-amber-700">Payment is verified and being reviewed by the event team.</p>}{tickets.filter((ticket) => ticket.booking_id === booking.id).map((ticket) => <div key={ticket.id} className="mb-4 rounded-lg border p-3"><div className="flex items-center gap-3"><TicketQr token={ticket.ticket_token} size={112} /><div><p className="font-medium text-sheraton-navy">Ticket {ticket.ticket_number}</p><p className="text-sm text-gray-600">{ticket.status === "checked_in" ? "Checked in" : ticket.status}</p><p className="break-all text-xs text-gray-500">{ticket.ticket_token}</p><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(ticket.ticket_token)}>Copy ticket code</Button></div></div></div>)}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
         })}
         {plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div>)}
       </div>
@@ -462,7 +495,7 @@ const EventsPage: React.FC = () => {
       <div className="text-center mb-8"><h3 className="text-2xl font-semibold text-sheraton-navy mb-2">Event Planning Tools</h3><p className="text-gray-600">Professional tools to help you plan the perfect event</p></div>
       <div className="grid md:grid-cols-2 gap-6">{planningTools.map((tool) => <div key={tool.title} className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"><div className="flex items-center mb-4"><div className="p-3 bg-sheraton-cream rounded-lg mr-4"><tool.icon className="h-6 w-6 text-sheraton-navy" /></div><div><h4 className="font-semibold text-sheraton-navy">{tool.title}</h4><p className="text-sm text-gray-600">{tool.description}</p></div></div><Button onClick={() => setNotice(`${tool.title} will be connected to your submitted event proposal.`)} className="w-full bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{tool.action}</Button></div>)}</div>
       <div className="bg-white rounded-lg shadow-md p-6"><h4 className="text-lg font-semibold text-sheraton-navy mb-4">Quick Event Creation</h4><div className="grid md:grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-2">Event Title</label><Input value={planForm.title} onChange={(event) => setPlanForm((form) => ({ ...form, title: event.target.value }))} placeholder="Enter event name" /></div><div><label className="block text-sm font-medium mb-2">Event Date</label><Input type="date" value={planForm.eventDate} onChange={(event) => setPlanForm((form) => ({ ...form, eventDate: event.target.value }))} /></div><div><label className="block text-sm font-medium mb-2">Location</label><Input value={planForm.location} onChange={(event) => setPlanForm((form) => ({ ...form, location: event.target.value }))} placeholder="Event location" /></div><div><label className="block text-sm font-medium mb-2">Expected Guests</label><Input type="number" min="1" value={planForm.expectedGuests} onChange={(event) => setPlanForm((form) => ({ ...form, expectedGuests: event.target.value }))} placeholder="Number of guests" /></div><div className="md:col-span-2"><label className="block text-sm font-medium mb-2">Event Description</label><Textarea value={planForm.description} onChange={(event) => setPlanForm((form) => ({ ...form, description: event.target.value }))} placeholder="Describe your event" /></div><div className="md:col-span-2"><div className="flex items-center justify-between"><span className="text-sm font-medium">Private Event</span><Switch checked={planForm.isPrivate} onCheckedChange={(checked) => setPlanForm((form) => ({ ...form, isPrivate: checked }))} /></div></div></div>{notice && <p role="status" className="mt-4 rounded-md bg-sheraton-gold/20 p-3 text-sm text-sheraton-navy">{notice}</p>}<Button disabled={isSavingPlan} onClick={() => void submitPlan()} className="w-full mt-4 bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingPlanId ? "Update Event Proposal" : "Create Event Proposal"}</Button></div>
-      {canManageEvents && <div className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><div><h4 className="text-lg font-semibold text-sheraton-navy">Publish Special Event</h4><p className="text-sm text-gray-600">Manager-only CRUD for the events shown in Browse Events.</p></div>{editingEventId && <Button variant="outline" onClick={() => { setEditingEventId(null); setEventForm(initialEventForm); }}>Cancel edit</Button>}</div><div className="grid md:grid-cols-2 gap-4"><Input value={eventForm.title} onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))} placeholder="Event title" /><Input value={eventForm.category} onChange={(event) => setEventForm((form) => ({ ...form, category: event.target.value }))} placeholder="Category" /><Input type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm((form) => ({ ...form, startsAt: event.target.value }))} /><Input type="datetime-local" value={eventForm.endsAt} onChange={(event) => setEventForm((form) => ({ ...form, endsAt: event.target.value }))} /><Input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="Location" /><Input value={eventForm.hostName} onChange={(event) => setEventForm((form) => ({ ...form, hostName: event.target.value }))} placeholder="Host name" /><Input type="number" min="0" step="0.01" value={eventForm.price} onChange={(event) => setEventForm((form) => ({ ...form, price: event.target.value }))} placeholder="Price" /><Input value={eventForm.currency} onChange={(event) => setEventForm((form) => ({ ...form, currency: event.target.value }))} placeholder="Currency, e.g. UGX" /><Input type="number" min="1" value={eventForm.capacity} onChange={(event) => setEventForm((form) => ({ ...form, capacity: event.target.value }))} placeholder="Capacity" /><Input value={eventForm.timezone} onChange={(event) => setEventForm((form) => ({ ...form, timezone: event.target.value }))} placeholder="Timezone, e.g. Africa/Kampala" /><Textarea className="md:col-span-2" value={eventForm.description} onChange={(event) => setEventForm((form) => ({ ...form, description: event.target.value }))} placeholder="Event description" /></div><div className="mt-4 flex items-center justify-between"><span className="text-sm font-medium">Featured event</span><Switch checked={eventForm.featured} onCheckedChange={(checked) => setEventForm((form) => ({ ...form, featured: checked }))} /></div><div className="mt-4 flex gap-2"><Button disabled={isSavingPlan} onClick={() => void saveManagedEvent()} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingEventId ? "Update Published Event" : "Publish Event"}</Button>{events.length > 0 && <span className="text-xs text-gray-500 self-center">Use the event cards below to view published records.</span>}</div><div className="mt-5 space-y-2">{events.map((event) => <div key={event.id} className="flex items-center justify-between rounded border p-3"><span className="text-sm font-medium text-sheraton-navy">{event.title}</span><span className="flex gap-2"><Button size="sm" variant="outline" onClick={() => editManagedEvent(event)}>Edit</Button><Button size="sm" variant="outline" onClick={() => void deleteManagedEvent(event.id)}>Cancel</Button></span></div>)}</div></div>}
+      {canManageEvents && <div className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><div><h4 className="text-lg font-semibold text-sheraton-navy">Publish Special Event</h4><p className="text-sm text-gray-600">Manager-only CRUD for the events shown in Browse Events.</p></div>{editingEventId && <Button variant="outline" onClick={() => { setEditingEventId(null); setEventForm(initialEventForm); }}>Cancel edit</Button>}</div><div className="grid md:grid-cols-2 gap-4"><Input value={eventForm.title} onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))} placeholder="Event title" /><Input value={eventForm.category} onChange={(event) => setEventForm((form) => ({ ...form, category: event.target.value }))} placeholder="Category" /><Input type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm((form) => ({ ...form, startsAt: event.target.value }))} /><Input type="datetime-local" value={eventForm.endsAt} onChange={(event) => setEventForm((form) => ({ ...form, endsAt: event.target.value }))} /><Input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="Location" /><Input value={eventForm.hostName} onChange={(event) => setEventForm((form) => ({ ...form, hostName: event.target.value }))} placeholder="Host name" /><Input type="number" min="0" step="0.01" value={eventForm.price} onChange={(event) => setEventForm((form) => ({ ...form, price: event.target.value }))} placeholder="General admission price" /><Input value={eventForm.currency} onChange={(event) => setEventForm((form) => ({ ...form, currency: event.target.value }))} placeholder="Currency, e.g. UGX" /><Input type="number" min="1" value={eventForm.capacity} onChange={(event) => setEventForm((form) => ({ ...form, capacity: event.target.value }))} placeholder="Capacity / ticket limit" /><Input type="number" min="1" max="50" value={eventForm.maxTicketsPerOrder} onChange={(event) => setEventForm((form) => ({ ...form, maxTicketsPerOrder: event.target.value }))} placeholder="Max tickets per order" /><Input value={eventForm.timezone} onChange={(event) => setEventForm((form) => ({ ...form, timezone: event.target.value }))} placeholder="Timezone, e.g. Africa/Kampala" /><Textarea className="md:col-span-2" value={eventForm.description} onChange={(event) => setEventForm((form) => ({ ...form, description: event.target.value }))} placeholder="Event description" /></div><label className="mt-4 block text-sm">Event poster (public B2 image)<Input type="file" accept="image/*" disabled={isUploading} onChange={async (change) => { const file = change.target.files?.[0]; if (!file) return; if (!file.type.startsWith("image/")) { setNotice("Choose an image file for the event poster."); return; } const uploaded = await uploadFile(file, "special-events/posters"); if (uploaded) setEventForm((form) => ({ ...form, imageUrl: uploaded.publicUrl })); else setNotice("We could not upload the event poster."); }} />{eventForm.imageUrl && <img src={eventForm.imageUrl} alt="Event poster preview" className="mt-2 h-28 rounded object-cover" />}</label><div className="mt-4 flex items-center justify-between"><span className="text-sm font-medium">Featured event</span><Switch checked={eventForm.featured} onCheckedChange={(checked) => setEventForm((form) => ({ ...form, featured: checked }))} /></div><div className="mt-4 flex gap-2"><Button disabled={isSavingPlan} onClick={() => void saveManagedEvent()} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingEventId ? "Update Published Event" : "Publish Event"}</Button>{events.length > 0 && <span className="text-xs text-gray-500 self-center">Use the event cards below to view published records.</span>}</div><div className="mt-5 space-y-2">{events.map((event) => <div key={event.id} className="flex items-center justify-between rounded border p-3"><span className="text-sm font-medium text-sheraton-navy">{event.title}</span><span className="flex gap-2"><Button size="sm" variant="outline" onClick={() => editManagedEvent(event)}>Edit</Button><Button size="sm" variant="outline" onClick={() => void deleteManagedEvent(event.id)}>Cancel</Button></span></div>)}</div></div>}
     </div>
   );
 

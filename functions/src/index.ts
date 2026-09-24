@@ -4,6 +4,7 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3
 import { parse } from "csv-parse";
 import { onRequest } from "firebase-functions/v2/https";
 import PDFDocument from "pdfkit";
+import QRCode from "qrcode";
 import { createClient } from "@supabase/supabase-js";
 
 type BankRecord = Record<string, string>;
@@ -293,6 +294,97 @@ export const importBankCSV = onRequest({ region: "us-central1", timeoutSeconds: 
       if (failed.error) logStage("receipt_update", correlation, { operation: "import_failed_update", importId: payload.importId, updateFailed: true });
     }
     response.status(failureError.envelope.retryable ? 500 : 400).json(failureError.envelope);
+  }
+});
+
+type TicketEmailPayload = { deliveryId?: string };
+
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[character]!));
+
+async function createEventTicketPdf(
+  tickets: Array<{ ticket_token: string; ticket_number: number; attendee_name: string; attendee_email: string; ticket_type: string }>,
+  event: { title: string; starts_at: string; timezone: string; location: string },
+  orderNumber: string,
+): Promise<Buffer> {
+  const document = new PDFDocument({ size: "A4", margin: 48 });
+  const chunks: Buffer[] = [];
+  document.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const completed = new Promise<Buffer>((resolve, reject) => {
+    document.once("end", () => resolve(Buffer.concat(chunks)));
+    document.once("error", reject);
+  });
+  for (const [index, ticket] of tickets.entries()) {
+    if (index > 0) document.addPage();
+    document.fontSize(22).fillColor("#172b4d").text(event.title);
+    document.moveDown(0.5).fontSize(12).fillColor("#555").text(
+      new Intl.DateTimeFormat("en", { dateStyle: "full", timeStyle: "short", timeZone: event.timezone }).format(new Date(event.starts_at)),
+    );
+    document.text(event.location).moveDown(1.2);
+    document.fontSize(16).fillColor("#172b4d").text(ticket.ticket_type);
+    document.fontSize(11).fillColor("#555").text(`Order ${orderNumber} · Ticket ${ticket.ticket_number} of ${tickets.length}`);
+    document.moveDown(0.5).text(ticket.attendee_name).text(ticket.attendee_email);
+    const qr = await QRCode.toBuffer(ticket.ticket_token, { type: "png", width: 280, margin: 2, errorCorrectionLevel: "H" });
+    document.image(qr, { fit: [220, 220], align: "center" });
+    document.moveDown(0.5).fontSize(9).text(`Ticket code: ${ticket.ticket_token}`, { align: "center" });
+  }
+  document.end();
+  return completed;
+}
+
+export const generateAndSendSpecialEventTickets = onRequest({ region: "us-central1", timeoutSeconds: 120, memory: "512MiB", secrets: runtimeSecrets }, async (request, response) => {
+  const { value, raw } = jsonBody(request);
+  const correlation = correlationId(request, value);
+  const payload = value as TicketEmailPayload;
+  if (request.method !== "POST") {
+    response.status(405).json({ ok: false, error: "POST required" });
+    return;
+  }
+  const client = supabase();
+  try {
+    verifyWebhook(request, raw);
+    if (!payload.deliveryId) throw new Error("Ticket email delivery ID is required");
+    const { data: delivery, error: deliveryError } = await client.from("special_event_ticket_email_deliveries").select("id,booking_id,status").eq("id", payload.deliveryId).single();
+    if (deliveryError || !delivery) throw deliveryError || new Error("Ticket email delivery not found");
+    if (delivery.status === "sent") {
+      response.json({ ok: true, skipped: true, correlationId: correlation });
+      return;
+    }
+    const { data: booking, error: bookingError } = await client.from("special_event_bookings").select("id,event_id,order_number,guest_email,status,payment_status").eq("id", delivery.booking_id).single();
+    if (bookingError || !booking) throw bookingError || new Error("Ticket booking not found");
+    if (booking.status !== "confirmed" || booking.payment_status !== "paid") throw new Error("Ticket booking is not confirmed and paid");
+    const [{ data: tickets, error: ticketsError }, { data: eventData, error: eventDataError }] = await Promise.all([
+      client.from("special_event_tickets").select("ticket_token,ticket_number,attendee_name,attendee_email,ticket_type_id").eq("booking_id", booking.id).order("ticket_number"),
+      client.from("special_events").select("title,starts_at,timezone,location").eq("id", booking.event_id).single(),
+    ]);
+    if (ticketsError) throw ticketsError;
+    if (eventDataError || !eventData) throw eventDataError || new Error("Ticket event not found");
+    const { data: ticketTypes, error: ticketTypesError } = await client.from("special_event_ticket_types").select("id,name").in("id", tickets.map((ticket) => ticket.ticket_type_id));
+    if (ticketTypesError) throw ticketTypesError;
+    const typeNames = new Map((ticketTypes || []).map((ticketType) => [ticketType.id, ticketType.name]));
+    const preparedTickets = tickets.map((ticket) => ({ ...ticket, ticket_type: typeNames.get(ticket.ticket_type_id) || "General Admission" }));
+    if (!preparedTickets.length || !booking.guest_email) throw new Error("Ticket email address or tickets are missing");
+    const pdf = await createEventTicketPdf(preparedTickets, eventData, booking.order_number);
+    const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": required("BREVO_API_KEY"), "content-type": "application/json" },
+      body: JSON.stringify({
+        sender: { email: process.env.BREVO_SENDER_EMAIL || "billing-test@yourplatform.com", name: process.env.BREVO_SENDER_NAME || "Special Events" },
+        to: [{ email: booking.guest_email }],
+        subject: `Your tickets for ${eventData.title}`,
+        htmlContent: `<p>Your payment is confirmed. Your admission tickets for <strong>${escapeHtml(eventData.title)}</strong> are attached.</p><p>Order ${escapeHtml(booking.order_number)} · ${preparedTickets.length} ticket(s)</p><p>Present one ticket QR code per attendee at the entrance.</p>`,
+        attachment: [{ name: `${booking.order_number}-tickets.pdf`, content: pdf.toString("base64") }],
+      }),
+    });
+    if (!emailResponse.ok) throw new Error(`Brevo rejected ticket email (${emailResponse.status}): ${(await emailResponse.text()).slice(0, 1000)}`);
+    await client.from("special_event_ticket_email_deliveries").update({ status: "sent", error_message: null, sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", delivery.id);
+    response.json({ ok: true, sent: true, correlationId: correlation });
+  } catch (error) {
+    if (payload.deliveryId) {
+      await client.from("special_event_ticket_email_deliveries").update({ status: "failed", error_message: safeError(error), updated_at: new Date().toISOString() }).eq("id", payload.deliveryId);
+    }
+    response.status(500).json({ ok: false, error: safeError(error), correlationId: correlation });
   }
 });
 

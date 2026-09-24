@@ -22,6 +22,7 @@ import StaffPortalPage from "./pages/StaffPortalPage";
 import ManagementPage from "./pages/ManagementPage";
 import TravelDeskPage from "./pages/TravelDeskPage";
 import EventsPage from "./pages/EventsPage";
+import SpecialEventOperationsPage from "./pages/SpecialEventOperationsPage";
 import BlogPage from "./pages/BlogPage";
 import ShopPage from "./pages/ShopPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -143,6 +144,7 @@ function App() {
               <Route path="/staff" element={<StaffPortalPage />} />
               <Route path="/management" element={<ManagementPage />} />
               <Route path="/travel" element={<TravelDeskPage />} />
+              <Route path="/events/operations/:eventId" element={<SpecialEventOperationsPage />} />
               <Route path="/events" element={<EventsPage />} />
               <Route path="/blog" element={<BlogPage />} />
               <Route path="/shop" element={<ShopPage />} />
