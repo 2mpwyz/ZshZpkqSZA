@@ -315,7 +315,7 @@ const EventsPage: React.FC = () => {
         location: planForm.location.trim(),
         expected_guests: Number(planForm.expectedGuests),
         description: planForm.description.trim() || null,
-        image_url: planForm.imageUrl || null,
+        ...(planForm.imageUrl ? { image_url: planForm.imageUrl } : {}),
         is_private: planForm.isPrivate,
         status: "submitted" as const,
       };
@@ -326,11 +326,19 @@ const EventsPage: React.FC = () => {
       setEditingPlanId(null);
       setPlanForm(initialPlan);
       setNotice("Your event proposal has been submitted.");
-      await loadUserData(authData.user.id);
       setActiveTab("my-events");
+      try {
+        await loadUserData(authData.user.id);
+      } catch (error) {
+        console.error("Unable to refresh event proposals", error);
+        setNotice("Your proposal was submitted, but we could not refresh your event list.");
+      }
     } catch (error) {
       console.error("Unable to create event proposal", error);
-      setNotice("We could not submit your event proposal.");
+      const message = error && typeof error === "object" && "message" in error && typeof error.message === "string"
+        ? error.message
+        : "Please try again.";
+      setNotice(`We could not submit your event proposal: ${message}`);
     } finally {
       setIsSavingPlan(false);
     }
