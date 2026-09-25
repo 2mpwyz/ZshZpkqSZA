@@ -118,6 +118,8 @@ const EventsPage: React.FC = () => {
   const [notice, setNotice] = useState("");
   const [shouldScrollToQuickCreation, setShouldScrollToQuickCreation] = useState(false);
   const quickEventCreationRef = useRef<HTMLDivElement>(null);
+  const planCardRefs = useRef(new Map<string, HTMLDivElement>());
+  const pendingPlanScrollId = useRef<string | null>(null);
 
   const loadUserData = async (userId: string | null) => {
     if (!userId) {
@@ -194,6 +196,14 @@ const EventsPage: React.FC = () => {
     quickEventCreationRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setShouldScrollToQuickCreation(false);
   }, [activeTab, shouldScrollToQuickCreation]);
+
+  useEffect(() => {
+    if (activeTab !== "my-events" || !pendingPlanScrollId.current) return;
+    const card = planCardRefs.current.get(pendingPlanScrollId.current);
+    if (!card) return;
+    pendingPlanScrollId.current = null;
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeTab, plans]);
 
   useEffect(() => {
     void loadEvents();
@@ -334,9 +344,10 @@ const EventsPage: React.FC = () => {
         status: "submitted" as const,
       };
       const result = editingPlanId
-        ? await supabase.from("special_event_plans").update(planValues).eq("id", editingPlanId).eq("user_id", authData.user.id)
-        : await supabase.from("special_event_plans").insert({ user_id: authData.user.id, ...planValues });
+        ? await supabase.from("special_event_plans").update(planValues).eq("id", editingPlanId).eq("user_id", authData.user.id).select("id").single()
+        : await supabase.from("special_event_plans").insert({ user_id: authData.user.id, ...planValues }).select("id").single();
       if (result.error) throw result.error;
+      pendingPlanScrollId.current = result.data.id;
       setEditingPlanId(null);
       setPlanForm(initialPlan);
       setNotice("Your event proposal has been submitted.");
@@ -344,6 +355,7 @@ const EventsPage: React.FC = () => {
       try {
         await loadUserData(authData.user.id);
       } catch (error) {
+        pendingPlanScrollId.current = null;
         console.error("Unable to refresh event proposals", error);
         setNotice("Your proposal was submitted, but we could not refresh your event list.");
       }
@@ -550,7 +562,7 @@ const EventsPage: React.FC = () => {
           const event = getEvent(booking.event_id);
           return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p>{booking.status === "pending" && booking.payment_status === "pending" && booking.expires_at && new Date(booking.expires_at).getTime() > Date.now() && <Button className="mb-3" onClick={() => void retryBookingPayment(booking.id)} disabled={retryingBookingId !== null}>{retryingBookingId === booking.id ? "Opening secure checkout…" : "Continue payment"}</Button>}{booking.payment_status === "manual_review" && <p className="mb-3 text-sm text-amber-700">Payment is verified and being reviewed by the event team.</p>}{tickets.filter((ticket) => ticket.booking_id === booking.id).map((ticket) => <div key={ticket.id} className="mb-4 rounded-lg border p-3"><div className="flex items-center gap-3"><TicketQr token={ticket.ticket_token} size={112} /><div><p className="font-medium text-sheraton-navy">Ticket {ticket.ticket_number}</p><p className="text-sm text-gray-600">{ticket.status === "checked_in" ? "Checked in" : ticket.status}</p><p className="break-all text-xs text-gray-500">{ticket.ticket_token}</p><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(ticket.ticket_token)}>Copy ticket code</Button></div></div></div>)}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
         })}
-        {activeTab === "my-events" && plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md overflow-hidden"><div className="p-6">{plan.image_url && <img src={plan.image_url} alt={plan.title} loading="lazy" className="mb-4 h-40 w-full rounded-lg object-cover" />}<div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div></div>)}
+        {activeTab === "my-events" && plans.map((plan) => <div key={plan.id} ref={(element) => { if (element) planCardRefs.current.set(plan.id, element); else planCardRefs.current.delete(plan.id); }} className="bg-white rounded-lg shadow-md overflow-hidden"><div className="p-6">{plan.image_url && <img src={plan.image_url} alt={plan.title} loading="lazy" className="mb-4 h-40 w-full rounded-lg object-cover" />}<div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><div className="flex gap-2"><Badge variant="secondary">{plan.status}</Badge>{plan.is_private && <Badge variant="outline">Private event</Badge>}</div></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p>{plan.description && <p className="text-sm text-gray-600 mb-4">{plan.description}</p>}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div></div>)}
       </div>
       {activeTab === "my-events" && (
         <div ref={quickEventCreationRef} className="scroll-mt-6">
