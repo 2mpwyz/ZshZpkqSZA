@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Calendar,
   MapPin,
@@ -38,6 +38,7 @@ type EventPlanForm = {
   location: string;
   expectedGuests: string;
   description: string;
+  imageUrl: string;
   isPrivate: boolean;
 };
 
@@ -47,6 +48,7 @@ const initialPlan: EventPlanForm = {
   location: "",
   expectedGuests: "",
   description: "",
+  imageUrl: "",
   isPrivate: false,
 };
 
@@ -89,8 +91,9 @@ const formatMoney = (value: number, currency: string) =>
 
 const EventsPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { uploadFile, isUploading } = useFileUpload();
-  const [activeTab, setActiveTab] = useState("browse");
+  const [activeTab, setActiveTab] = useState(searchParams.get("tab") === "my-tickets" ? "my-tickets" : "browse");
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [eventCart, setEventCart] = useState<Record<string, number>>({});
   const [showCheckout, setShowCheckout] = useState(false);
@@ -106,6 +109,7 @@ const EventsPage: React.FC = () => {
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [retryingBookingId, setRetryingBookingId] = useState<string | null>(null);
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [profileRole, setProfileRole] = useState<string | null>(null);
   const [eventForm, setEventForm] = useState<EventForm>(initialEventForm);
@@ -177,6 +181,11 @@ const EventsPage: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (requestedTab === "my-tickets" || requestedTab === "my-events") setActiveTab(requestedTab);
+  }, [searchParams]);
 
   useEffect(() => {
     void loadEvents();
@@ -312,6 +321,7 @@ const EventsPage: React.FC = () => {
         location: planForm.location.trim(),
         expected_guests: Number(planForm.expectedGuests),
         description: planForm.description.trim() || null,
+        ...(planForm.imageUrl ? { image_url: planForm.imageUrl } : {}),
         is_private: planForm.isPrivate,
         status: "submitted" as const,
       };
@@ -322,14 +332,42 @@ const EventsPage: React.FC = () => {
       setEditingPlanId(null);
       setPlanForm(initialPlan);
       setNotice("Your event proposal has been submitted.");
-      await loadUserData(authData.user.id);
       setActiveTab("my-events");
+      try {
+        await loadUserData(authData.user.id);
+      } catch (error) {
+        console.error("Unable to refresh event proposals", error);
+        setNotice("Your proposal was submitted, but we could not refresh your event list.");
+      }
     } catch (error) {
       console.error("Unable to create event proposal", error);
-      setNotice("We could not submit your event proposal.");
+      const message = error && typeof error === "object" && "message" in error && typeof error.message === "string"
+        ? error.message
+        : "Please try again.";
+      setNotice(`We could not submit your event proposal: ${message}`);
     } finally {
       setIsSavingPlan(false);
     }
+  };
+
+  const uploadPlanImage = async (file: File) => {
+    const uploaded = await uploadFile(file, "special-events");
+    if (!uploaded) {
+      setNotice("We could not upload the event poster.");
+      return;
+    }
+    setPlanForm((form) => ({ ...form, imageUrl: uploaded.publicUrl }));
+    setNotice("Event poster uploaded.");
+  };
+
+  const uploadEventImage = async (file: File) => {
+    const uploaded = await uploadFile(file, "special-events");
+    if (!uploaded) {
+      setNotice("We could not upload the event image.");
+      return;
+    }
+    setEventForm((form) => ({ ...form, imageUrl: uploaded.publicUrl }));
+    setNotice("Event image uploaded.");
   };
 
   const saveManagedEvent = async () => {
@@ -397,7 +435,7 @@ const EventsPage: React.FC = () => {
 
   const editPlan = (plan: SpecialEventPlan) => {
     setEditingPlanId(plan.id);
-    setPlanForm({ title: plan.title, eventDate: plan.event_date, location: plan.location, expectedGuests: String(plan.expected_guests), description: plan.description || "", isPrivate: plan.is_private });
+    setPlanForm({ title: plan.title, eventDate: plan.event_date, location: plan.location, expectedGuests: String(plan.expected_guests), description: plan.description || "", imageUrl: plan.image_url || "", isPrivate: plan.is_private });
     setActiveTab("planning");
   };
 
@@ -411,10 +449,35 @@ const EventsPage: React.FC = () => {
     }
   };
 
+  const retryBookingPayment = async (bookingId: string) => {
+    setRetryingBookingId(bookingId);
+    setNotice("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        navigate(`/login?returnTo=${encodeURIComponent("/events")}`);
+        return;
+      }
+      const response = await fetch("/api/payments/special-events/session", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}`, "content-type": "application/json" },
+        body: JSON.stringify({ bookingId }),
+      });
+      const payload = await response.json() as { paymentUrl?: string; error?: string };
+      if (!response.ok || !payload.paymentUrl) throw new Error(payload.error || "Unable to reopen secure payment.");
+      if (window.top && window.top !== window.self) window.top.location.replace(payload.paymentUrl);
+      else window.location.replace(payload.paymentUrl);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to retry event payment.");
+    } finally {
+      setRetryingBookingId(null);
+    }
+  };
+
   const handleBooked = async () => {
     clearEventCart();
     setShowCheckout(false);
-    setActiveTab("my-events");
+    setActiveTab("my-tickets");
     const { data: authData } = await supabase.auth.getUser();
     if (authData.user) await loadUserData(authData.user.id);
     await loadEvents();
@@ -424,10 +487,10 @@ const EventsPage: React.FC = () => {
     const isFavorite = favoriteIds.has(event.id);
     const remaining = Math.max(event.capacity - event.attendees_count, 0);
     return (
-      <div key={event.id} className={featured ? "relative bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow" : "bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow"}>
+      <div key={event.id} className={featured ? "relative bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow" : "bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow"}>
         {featured && <div className="absolute top-4 right-4 z-10"><Badge className="bg-sheraton-gold text-sheraton-navy">Featured</Badge></div>}
-        {featured && (event.image_url ? <img src={event.image_url} alt="" className="h-48 w-full object-cover" /> : <div className="h-48 bg-gradient-to-br from-sheraton-cream to-sheraton-pearl flex items-center justify-center"><Award className="h-16 w-16 text-sheraton-gold" /></div>)}
-        <div className={featured ? "p-6" : "p-0"}>
+        {event.image_url ? <img src={event.image_url} alt={event.title} loading="lazy" className={featured ? "h-48 w-full object-cover" : "h-40 w-full object-cover"} /> : <div className={featured ? "h-48 bg-gradient-to-br from-sheraton-cream to-sheraton-pearl flex items-center justify-center" : "h-40 bg-gradient-to-br from-sheraton-cream to-sheraton-pearl flex items-center justify-center"}><Award className={featured ? "h-16 w-16 text-sheraton-gold" : "h-12 w-12 text-sheraton-gold"} /></div>}
+        <div className={featured ? "p-6" : "p-4"}>
           {featured ? (
             <div className="flex items-center gap-2 mb-2"><Star className="h-4 w-4 text-yellow-500 fill-current" /><span className="text-sm text-gray-600">{event.rating.toFixed(1)}</span><span className="text-sm text-gray-400">• {event.host_name || "Sheraton"}</span></div>
           ) : <Badge variant="outline" className="mb-2">{event.category || "Experience"}</Badge>}
@@ -464,21 +527,21 @@ const EventsPage: React.FC = () => {
       {!isLoading && !errorMessage && !filteredEvents.length && <div className="rounded-lg bg-white p-10 text-center text-gray-600">No upcoming events match your search.</div>}
       {!isLoading && !errorMessage && featuredEvents.length > 0 && <div className="mb-8"><h3 className="text-xl font-semibold mb-4 text-sheraton-navy">Featured Events</h3><div className="grid md:grid-cols-2 gap-6">{featuredEvents.map((event) => renderEventCard(event, true))}</div></div>}
       {!isLoading && !errorMessage && filteredEvents.length > 0 && <div><h3 className="text-xl font-semibold mb-4 text-sheraton-navy">All Events</h3><div className="grid md:grid-cols-3 gap-4">{filteredEvents.map((event) => renderEventCard(event))}</div></div>}
-      {selectedEvent && getEvent(selectedEvent) && <div className="bg-white rounded-lg shadow-md p-6"><div className="flex items-start justify-between gap-4"><div><Badge variant="outline" className="mb-2">{getEvent(selectedEvent)?.category || "Experience"}</Badge><h3 className="text-xl font-semibold text-sheraton-navy">{getEvent(selectedEvent)?.title}</h3><p className="mt-2 text-gray-600">{getEvent(selectedEvent)?.description}</p></div><Button variant="outline" onClick={() => setSelectedEvent(null)}>Close</Button></div><div className="mt-4 flex flex-wrap gap-4 text-sm text-gray-600"><span><Calendar className="inline h-4 w-4 mr-1" />{formatEventDate(getEvent(selectedEvent)!.starts_at, getEvent(selectedEvent)!.timezone)}</span><span><MapPin className="inline h-4 w-4 mr-1" />{getEvent(selectedEvent)?.location}</span><span><Users className="inline h-4 w-4 mr-1" />{Math.max(getEvent(selectedEvent)!.capacity - getEvent(selectedEvent)!.attendees_count, 0)} places remaining</span></div><Button className="mt-5 bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy" onClick={() => addToEventCart(selectedEvent)}>Book Now</Button></div>}
+      {selectedEvent && getEvent(selectedEvent) && <div className="bg-white rounded-lg shadow-md p-6">{getEvent(selectedEvent)?.image_url && <img src={getEvent(selectedEvent)!.image_url!} alt={getEvent(selectedEvent)!.title} loading="lazy" className="mb-5 max-h-80 w-full rounded-lg object-cover" />}<div className="flex items-start justify-between gap-4"><div><Badge variant="outline" className="mb-2">{getEvent(selectedEvent)?.category || "Experience"}</Badge><h3 className="text-xl font-semibold text-sheraton-navy">{getEvent(selectedEvent)?.title}</h3><p className="mt-2 text-gray-600">{getEvent(selectedEvent)?.description}</p></div><Button variant="outline" onClick={() => setSelectedEvent(null)}>Close</Button></div><div className="mt-4 flex flex-wrap gap-4 text-sm text-gray-600"><span><Calendar className="inline h-4 w-4 mr-1" />{formatEventDate(getEvent(selectedEvent)!.starts_at, getEvent(selectedEvent)!.timezone)}</span><span><MapPin className="inline h-4 w-4 mr-1" />{getEvent(selectedEvent)?.location}</span><span><Users className="inline h-4 w-4 mr-1" />{Math.max(getEvent(selectedEvent)!.capacity - getEvent(selectedEvent)!.attendees_count, 0)} places remaining</span></div><Button className="mt-5 bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy" onClick={() => addToEventCart(selectedEvent)}>Book Now</Button></div>}
     </div>
   );
 
   const renderMyEvents = () => (
     <div className="space-y-6">
-      <div className="flex items-center justify-between"><h3 className="text-xl font-semibold text-sheraton-navy">My Events</h3><Button onClick={() => setActiveTab("planning")} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy"><Plus className="h-4 w-4 mr-2" />Create Event</Button></div>
-      {!isSignedIn && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Sign in to view bookings, saved events, and event proposals.</div>}
-      {isSignedIn && !bookings.length && !plans.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your booked events and proposals will appear here.</div>}
+      <div className="flex items-center justify-between"><h3 className="text-xl font-semibold text-sheraton-navy">{activeTab === "my-tickets" ? "My Tickets" : "My Events"}</h3>{activeTab === "my-events" && <Button onClick={() => setActiveTab("planning")} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy"><Plus className="h-4 w-4 mr-2" />Create Event</Button>}</div>
+      {!isSignedIn && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">{activeTab === "my-tickets" ? "Sign in to view your event bookings and tickets." : "Sign in to view and manage your event proposals."}</div>}
+      {isSignedIn && activeTab === "my-tickets" && !bookings.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your event bookings and tickets will appear here.</div>}{isSignedIn && activeTab === "my-events" && !plans.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your created event proposals will appear here.</div>}
       <div className="grid md:grid-cols-2 gap-4">
-        {bookings.map((booking) => {
+        {activeTab === "my-tickets" && bookings.map((booking) => {
           const event = getEvent(booking.event_id);
-          return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p>{booking.payment_status === "manual_review" && <p className="mb-3 text-sm text-amber-700">Payment is verified and being reviewed by the event team.</p>}{tickets.filter((ticket) => ticket.booking_id === booking.id).map((ticket) => <div key={ticket.id} className="mb-4 rounded-lg border p-3"><div className="flex items-center gap-3"><TicketQr token={ticket.ticket_token} size={112} /><div><p className="font-medium text-sheraton-navy">Ticket {ticket.ticket_number}</p><p className="text-sm text-gray-600">{ticket.status === "checked_in" ? "Checked in" : ticket.status}</p><p className="break-all text-xs text-gray-500">{ticket.ticket_token}</p><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(ticket.ticket_token)}>Copy ticket code</Button></div></div></div>)}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
+          return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p>{booking.status === "pending" && booking.payment_status === "pending" && booking.expires_at && new Date(booking.expires_at).getTime() > Date.now() && <Button className="mb-3" onClick={() => void retryBookingPayment(booking.id)} disabled={retryingBookingId !== null}>{retryingBookingId === booking.id ? "Opening secure checkout…" : "Continue payment"}</Button>}{booking.payment_status === "manual_review" && <p className="mb-3 text-sm text-amber-700">Payment is verified and being reviewed by the event team.</p>}{tickets.filter((ticket) => ticket.booking_id === booking.id).map((ticket) => <div key={ticket.id} className="mb-4 rounded-lg border p-3"><div className="flex items-center gap-3"><TicketQr token={ticket.ticket_token} size={112} /><div><p className="font-medium text-sheraton-navy">Ticket {ticket.ticket_number}</p><p className="text-sm text-gray-600">{ticket.status === "checked_in" ? "Checked in" : ticket.status}</p><p className="break-all text-xs text-gray-500">{ticket.ticket_token}</p><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(ticket.ticket_token)}>Copy ticket code</Button></div></div></div>)}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
         })}
-        {plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div>)}
+        {activeTab === "my-events" && plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md overflow-hidden"><div className="p-6">{plan.image_url && <img src={plan.image_url} alt={plan.title} loading="lazy" className="mb-4 h-40 w-full rounded-lg object-cover" />}<div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div></div>)}
       </div>
     </div>
   );
@@ -494,13 +557,14 @@ const EventsPage: React.FC = () => {
     <div className="space-y-6">
       <div className="text-center mb-8"><h3 className="text-2xl font-semibold text-sheraton-navy mb-2">Event Planning Tools</h3><p className="text-gray-600">Professional tools to help you plan the perfect event</p></div>
       <div className="grid md:grid-cols-2 gap-6">{planningTools.map((tool) => <div key={tool.title} className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"><div className="flex items-center mb-4"><div className="p-3 bg-sheraton-cream rounded-lg mr-4"><tool.icon className="h-6 w-6 text-sheraton-navy" /></div><div><h4 className="font-semibold text-sheraton-navy">{tool.title}</h4><p className="text-sm text-gray-600">{tool.description}</p></div></div><Button onClick={() => setNotice(`${tool.title} will be connected to your submitted event proposal.`)} className="w-full bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{tool.action}</Button></div>)}</div>
-      <div className="bg-white rounded-lg shadow-md p-6"><h4 className="text-lg font-semibold text-sheraton-navy mb-4">Quick Event Creation</h4><div className="grid md:grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-2">Event Title</label><Input value={planForm.title} onChange={(event) => setPlanForm((form) => ({ ...form, title: event.target.value }))} placeholder="Enter event name" /></div><div><label className="block text-sm font-medium mb-2">Event Date</label><Input type="date" value={planForm.eventDate} onChange={(event) => setPlanForm((form) => ({ ...form, eventDate: event.target.value }))} /></div><div><label className="block text-sm font-medium mb-2">Location</label><Input value={planForm.location} onChange={(event) => setPlanForm((form) => ({ ...form, location: event.target.value }))} placeholder="Event location" /></div><div><label className="block text-sm font-medium mb-2">Expected Guests</label><Input type="number" min="1" value={planForm.expectedGuests} onChange={(event) => setPlanForm((form) => ({ ...form, expectedGuests: event.target.value }))} placeholder="Number of guests" /></div><div className="md:col-span-2"><label className="block text-sm font-medium mb-2">Event Description</label><Textarea value={planForm.description} onChange={(event) => setPlanForm((form) => ({ ...form, description: event.target.value }))} placeholder="Describe your event" /></div><div className="md:col-span-2"><div className="flex items-center justify-between"><span className="text-sm font-medium">Private Event</span><Switch checked={planForm.isPrivate} onCheckedChange={(checked) => setPlanForm((form) => ({ ...form, isPrivate: checked }))} /></div></div></div>{notice && <p role="status" className="mt-4 rounded-md bg-sheraton-gold/20 p-3 text-sm text-sheraton-navy">{notice}</p>}<Button disabled={isSavingPlan} onClick={() => void submitPlan()} className="w-full mt-4 bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingPlanId ? "Update Event Proposal" : "Create Event Proposal"}</Button></div>
-      {canManageEvents && <div className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><div><h4 className="text-lg font-semibold text-sheraton-navy">Publish Special Event</h4><p className="text-sm text-gray-600">Manager-only CRUD for the events shown in Browse Events.</p></div>{editingEventId && <Button variant="outline" onClick={() => { setEditingEventId(null); setEventForm(initialEventForm); }}>Cancel edit</Button>}</div><div className="grid md:grid-cols-2 gap-4"><Input value={eventForm.title} onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))} placeholder="Event title" /><Input value={eventForm.category} onChange={(event) => setEventForm((form) => ({ ...form, category: event.target.value }))} placeholder="Category" /><Input type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm((form) => ({ ...form, startsAt: event.target.value }))} /><Input type="datetime-local" value={eventForm.endsAt} onChange={(event) => setEventForm((form) => ({ ...form, endsAt: event.target.value }))} /><Input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="Location" /><Input value={eventForm.hostName} onChange={(event) => setEventForm((form) => ({ ...form, hostName: event.target.value }))} placeholder="Host name" /><Input type="number" min="0" step="0.01" value={eventForm.price} onChange={(event) => setEventForm((form) => ({ ...form, price: event.target.value }))} placeholder="General admission price" /><Input value={eventForm.currency} onChange={(event) => setEventForm((form) => ({ ...form, currency: event.target.value }))} placeholder="Currency, e.g. UGX" /><Input type="number" min="1" value={eventForm.capacity} onChange={(event) => setEventForm((form) => ({ ...form, capacity: event.target.value }))} placeholder="Capacity / ticket limit" /><Input type="number" min="1" max="50" value={eventForm.maxTicketsPerOrder} onChange={(event) => setEventForm((form) => ({ ...form, maxTicketsPerOrder: event.target.value }))} placeholder="Max tickets per order" /><Input value={eventForm.timezone} onChange={(event) => setEventForm((form) => ({ ...form, timezone: event.target.value }))} placeholder="Timezone, e.g. Africa/Kampala" /><Textarea className="md:col-span-2" value={eventForm.description} onChange={(event) => setEventForm((form) => ({ ...form, description: event.target.value }))} placeholder="Event description" /></div><label className="mt-4 block text-sm">Event poster (public B2 image)<Input type="file" accept="image/*" disabled={isUploading} onChange={async (change) => { const file = change.target.files?.[0]; if (!file) return; if (!file.type.startsWith("image/")) { setNotice("Choose an image file for the event poster."); return; } const uploaded = await uploadFile(file, "special-events/posters"); if (uploaded) setEventForm((form) => ({ ...form, imageUrl: uploaded.publicUrl })); else setNotice("We could not upload the event poster."); }} />{eventForm.imageUrl && <img src={eventForm.imageUrl} alt="Event poster preview" className="mt-2 h-28 rounded object-cover" />}</label><div className="mt-4 flex items-center justify-between"><span className="text-sm font-medium">Featured event</span><Switch checked={eventForm.featured} onCheckedChange={(checked) => setEventForm((form) => ({ ...form, featured: checked }))} /></div><div className="mt-4 flex gap-2"><Button disabled={isSavingPlan} onClick={() => void saveManagedEvent()} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingEventId ? "Update Published Event" : "Publish Event"}</Button>{events.length > 0 && <span className="text-xs text-gray-500 self-center">Use the event cards below to view published records.</span>}</div><div className="mt-5 space-y-2">{events.map((event) => <div key={event.id} className="flex items-center justify-between rounded border p-3"><span className="text-sm font-medium text-sheraton-navy">{event.title}</span><span className="flex gap-2"><Button size="sm" variant="outline" onClick={() => editManagedEvent(event)}>Edit</Button><Button size="sm" variant="outline" onClick={() => void deleteManagedEvent(event.id)}>Cancel</Button></span></div>)}</div></div>}
+      <div className="bg-white rounded-lg shadow-md p-6"><h4 className="text-lg font-semibold text-sheraton-navy mb-4">Quick Event Creation</h4><div className="grid md:grid-cols-2 gap-4"><div><label className="block text-sm font-medium mb-2">Event Title</label><Input value={planForm.title} onChange={(event) => setPlanForm((form) => ({ ...form, title: event.target.value }))} placeholder="Enter event name" /></div><div><label className="block text-sm font-medium mb-2">Event Date</label><Input type="date" value={planForm.eventDate} onChange={(event) => setPlanForm((form) => ({ ...form, eventDate: event.target.value }))} /></div><div><label className="block text-sm font-medium mb-2">Location</label><Input value={planForm.location} onChange={(event) => setPlanForm((form) => ({ ...form, location: event.target.value }))} placeholder="Event location" /></div><div><label className="block text-sm font-medium mb-2">Expected Guests</label><Input type="number" min="1" value={planForm.expectedGuests} onChange={(event) => setPlanForm((form) => ({ ...form, expectedGuests: event.target.value }))} placeholder="Number of guests" /></div><div className="md:col-span-2"><label className="block text-sm font-medium mb-2">Event Description</label><Textarea value={planForm.description} onChange={(event) => setPlanForm((form) => ({ ...form, description: event.target.value }))} placeholder="Describe your event" /></div><div className="md:col-span-2"><label className="block text-sm font-medium mb-2">Event poster (optional)</label><Input type="file" accept="image/*" disabled={isUploading} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void uploadPlanImage(file); event.currentTarget.value = ""; }} />{isUploading && <p className="mt-1 text-sm text-gray-500">Uploading poster…</p>}{planForm.imageUrl && <img src={planForm.imageUrl} alt="Event poster preview" className="mt-3 h-40 w-full rounded-lg object-cover" />}</div><div className="md:col-span-2"><div className="flex items-center justify-between"><span className="text-sm font-medium">Private Event</span><Switch checked={planForm.isPrivate} onCheckedChange={(checked) => setPlanForm((form) => ({ ...form, isPrivate: checked }))} /></div></div></div>{notice && <p role="status" className="mt-4 rounded-md bg-sheraton-gold/20 p-3 text-sm text-sheraton-navy">{notice}</p>}<Button disabled={isSavingPlan || isUploading} onClick={() => void submitPlan()} className="w-full mt-4 bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingPlanId ? "Update Event Proposal" : "Create Event Proposal"}</Button></div>
+      {canManageEvents && <div className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><div><h4 className="text-lg font-semibold text-sheraton-navy">Publish Special Event</h4><p className="text-sm text-gray-600">Manager-only CRUD for the events shown in Browse Events.</p></div>{editingEventId && <Button variant="outline" onClick={() => { setEditingEventId(null); setEventForm(initialEventForm); }}>Cancel edit</Button>}</div><div className="grid md:grid-cols-2 gap-4"><Input value={eventForm.title} onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))} placeholder="Event title" /><Input value={eventForm.category} onChange={(event) => setEventForm((form) => ({ ...form, category: event.target.value }))} placeholder="Category" /><Input type="datetime-local" value={eventForm.startsAt} onChange={(event) => setEventForm((form) => ({ ...form, startsAt: event.target.value }))} /><Input type="datetime-local" value={eventForm.endsAt} onChange={(event) => setEventForm((form) => ({ ...form, endsAt: event.target.value }))} /><Input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="Location" /><Input value={eventForm.hostName} onChange={(event) => setEventForm((form) => ({ ...form, hostName: event.target.value }))} placeholder="Host name" /><div className="md:col-span-2 space-y-2"><label className="block text-sm font-medium text-gray-700">Event image (optional)</label><Input type="file" accept="image/*" disabled={isUploading} onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void uploadEventImage(file); event.currentTarget.value = ""; }} />{isUploading && <p className="text-sm text-gray-500">Uploading to secure storage…</p>}{eventForm.imageUrl && <img src={eventForm.imageUrl} alt="Event preview" className="h-32 w-full rounded-lg object-cover" />}</div><Input type="number" min="0" step="0.01" value={eventForm.price} onChange={(event) => setEventForm((form) => ({ ...form, price: event.target.value }))} placeholder="General admission price" /><Input value={eventForm.currency} onChange={(event) => setEventForm((form) => ({ ...form, currency: event.target.value }))} placeholder="Currency, e.g. UGX" /><Input type="number" min="1" value={eventForm.capacity} onChange={(event) => setEventForm((form) => ({ ...form, capacity: event.target.value }))} placeholder="Capacity / ticket limit" /><Input type="number" min="1" max="50" value={eventForm.maxTicketsPerOrder} onChange={(event) => setEventForm((form) => ({ ...form, maxTicketsPerOrder: event.target.value }))} placeholder="Max tickets per order" /><Input value={eventForm.timezone} onChange={(event) => setEventForm((form) => ({ ...form, timezone: event.target.value }))} placeholder="Timezone, e.g. Africa/Kampala" /><Textarea className="md:col-span-2" value={eventForm.description} onChange={(event) => setEventForm((form) => ({ ...form, description: event.target.value }))} placeholder="Event description" /></div><label className="mt-4 block text-sm">Event poster (public B2 image)<Input type="file" accept="image/*" disabled={isUploading} onChange={async (change) => { const file = change.target.files?.[0]; if (!file) return; if (!file.type.startsWith("image/")) { setNotice("Choose an image file for the event poster."); return; } const uploaded = await uploadFile(file, "special-events/posters"); if (uploaded) setEventForm((form) => ({ ...form, imageUrl: uploaded.publicUrl })); else setNotice("We could not upload the event poster."); }} />{eventForm.imageUrl && <img src={eventForm.imageUrl} alt="Event poster preview" className="mt-2 h-28 rounded object-cover" />}</label><div className="mt-4 flex items-center justify-between"><span className="text-sm font-medium">Featured event</span><Switch checked={eventForm.featured} onCheckedChange={(checked) => setEventForm((form) => ({ ...form, featured: checked }))} /></div><div className="mt-4 flex gap-2"><Button disabled={isSavingPlan} onClick={() => void saveManagedEvent()} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy">{isSavingPlan ? "Saving..." : editingEventId ? "Update Published Event" : "Publish Event"}</Button>{events.length > 0 && <span className="text-xs text-gray-500 self-center">Use the event cards below to view published records.</span>}</div><div className="mt-5 space-y-2">{events.map((event) => <div key={event.id} className="flex items-center justify-between rounded border p-3"><span className="text-sm font-medium text-sheraton-navy">{event.title}</span><span className="flex gap-2"><Button size="sm" variant="outline" onClick={() => editManagedEvent(event)}>Edit</Button><Button size="sm" variant="outline" onClick={() => void deleteManagedEvent(event.id)}>Cancel</Button></span></div>)}</div></div>}
     </div>
   );
 
   const tabs = [
     { id: "browse", label: "Browse Events", content: renderBrowseEvents },
+    { id: "my-tickets", label: "My Tickets", content: renderMyEvents },
     { id: "my-events", label: "My Events", content: renderMyEvents },
     { id: "planning", label: "Event Planning", content: renderPlanning },
   ];

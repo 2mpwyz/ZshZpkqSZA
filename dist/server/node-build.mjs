@@ -391,7 +391,7 @@ const getBookingAsService = async (bookingId) => {
 };
 const getPaymentAttemptAsService = async (txRef) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=*`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts?tx_ref=eq.${encodeURIComponent(txRef)}&select=id,booking_id,tx_ref,transaction_id,amount,currency,status`, {
     headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey)
   });
   if (!response.ok) throw new Error("Unable to retrieve event payment attempt");
@@ -399,14 +399,15 @@ const getPaymentAttemptAsService = async (txRef) => {
   if (!attempt) throw new SpecialEventPaymentError("Event payment attempt not found", 404);
   return attempt;
 };
-const updateBookingAsService = async (bookingId, values) => {
+const getActivePaymentAttempt = async (bookingId) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
-  const response = await fetch(`${supabaseUrl}/rest/v1/special_event_bookings?id=eq.${encodeURIComponent(bookingId)}`, {
-    method: "PATCH",
-    headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=minimal" },
-    body: JSON.stringify({ ...values, updated_at: (/* @__PURE__ */ new Date()).toISOString() })
-  });
-  if (!response.ok) throw new Error("Unable to update event booking");
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/special_event_payment_attempts?booking_id=eq.${encodeURIComponent(bookingId)}&status=in.(initiated,redirected,verified)&select=id,booking_id,tx_ref,transaction_id,amount,currency,status,payment_url,created_at&order=created_at.desc&limit=1`,
+    { headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey) }
+  );
+  if (!response.ok) throw new Error("Unable to retrieve active event payment attempt");
+  const [attempt] = await response.json();
+  return attempt || null;
 };
 const createPaymentAttempt = async (values) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
@@ -449,7 +450,7 @@ const confirmBookingAsService = async (bookingId, transactionId) => {
 };
 const assertTransactionMatches = (transaction, attempt, booking) => {
   if (transaction.status !== "successful" || transaction.tx_ref !== attempt.tx_ref) throw new Error("Event payment status does not match the booking");
-  if (Number(transaction.amount) !== Number(booking.total_amount) || transaction.currency !== booking.currency) throw new Error("Event payment amount does not match the booking");
+  if (Number(transaction.amount) !== Number(booking.total_amount) || Number(transaction.amount) !== Number(attempt.amount) || transaction.currency.toUpperCase() !== booking.currency.toUpperCase() || transaction.currency.toUpperCase() !== attempt.currency.toUpperCase()) throw new Error("Event payment amount does not match the booking");
   if (transaction.meta?.booking_id !== booking.id) throw new Error("Event payment metadata does not match the booking");
 };
 const prepareSpecialEventPayment = async (req, res) => {
@@ -459,11 +460,34 @@ const prepareSpecialEventPayment = async (req, res) => {
     if (!bookingId) throw new SpecialEventPaymentError("Booking ID is required");
     const booking = await getBooking(bookingId, req.headers.authorization);
     if (booking.payment_status === "paid") throw new SpecialEventPaymentError("This event booking has already been paid", 409);
-    if (booking.status !== "pending") throw new SpecialEventPaymentError("This event booking is no longer pending", 409);
+    if (booking.status !== "pending" || booking.payment_status !== "pending") throw new SpecialEventPaymentError("This event booking is no longer pending", 409);
+    if (booking.expires_at && new Date(booking.expires_at).getTime() <= Date.now()) throw new SpecialEventPaymentError("This ticket hold has expired. Start a new booking.", 409);
     if (Number(booking.total_amount) <= 0) throw new SpecialEventPaymentError("This booking does not require online payment", 400);
     const { secretKey } = getConfiguration();
+    const activeAttempt = await getActivePaymentAttempt(booking.id);
+    if (activeAttempt?.status === "redirected" && activeAttempt.payment_url) {
+      return res.json({ paymentUrl: activeAttempt.payment_url, txRef: activeAttempt.tx_ref, bookingId: booking.id });
+    }
+    if (activeAttempt?.status === "verified") {
+      throw new SpecialEventPaymentError("Payment verification is still processing. Refresh My Events shortly.", 409);
+    }
+    if (activeAttempt?.status === "initiated") {
+      const attemptAge = Date.now() - new Date(activeAttempt.created_at).getTime();
+      if (attemptAge < 12e4) {
+        throw new SpecialEventPaymentError("Secure checkout is being prepared. Try again in a moment.", 409);
+      }
+      await updatePaymentAttempt(activeAttempt.tx_ref, { status: "expired", failure_reason: "Checkout preparation timed out" });
+    }
     txRef = `special-event-${booking.order_number}-${randomUUID()}`;
-    await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    try {
+      await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    } catch (error) {
+      const racedAttempt = await getActivePaymentAttempt(booking.id);
+      if (racedAttempt?.status === "redirected" && racedAttempt.payment_url) {
+        return res.json({ paymentUrl: racedAttempt.payment_url, txRef: racedAttempt.tx_ref, bookingId: booking.id });
+      }
+      throw error;
+    }
     const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secretKey}`, "content-type": "application/json" },
@@ -495,9 +519,11 @@ const verifySpecialEventPayment = async (req, res) => {
     const booking = await getBooking(attempt.booking_id, req.headers.authorization);
     const transaction = await verifyTransaction(String(transactionId));
     assertTransactionMatches(transaction, attempt, booking);
+    if (attempt.status !== "successful" && attempt.status !== "manual_review") {
+      await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "verified" });
+    }
     const confirmation = await confirmBookingAsService(booking.id, String(transaction.id));
-    await updatePaymentAttempt(txRef, { transaction_id: String(transaction.id), status: "completed", completed_at: (/* @__PURE__ */ new Date()).toISOString() });
-    return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: "paid" });
+    return res.json({ bookingId: confirmation.booking_id, orderNumber: confirmation.order_number, confirmationNumber: confirmation.confirmation_number, ticketCode: confirmation.ticket_code, paymentStatus: confirmation.payment_status });
   } catch (error) {
     return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to verify event payment" });
   }
@@ -508,8 +534,12 @@ const cancelSpecialEventPayment = async (req, res) => {
     if (!txRef || status !== "cancelled" && status !== "failed") return res.status(400).json({ error: "Event payment outcome is invalid" });
     const attempt = await getPaymentAttemptAsService(txRef);
     await getBooking(attempt.booking_id, req.headers.authorization);
-    await updatePaymentAttempt(txRef, status === "cancelled" ? { status, cancelled_at: (/* @__PURE__ */ new Date()).toISOString() } : { status, failure_reason: "Flutterwave returned an unsuccessful payment status" });
-    await updateBookingAsService(attempt.booking_id, { payment_status: status, status: "cancelled" });
+    if (attempt.status === "successful" || attempt.status === "manual_review") {
+      return res.json({ bookingId: attempt.booking_id, paymentStatus: attempt.status });
+    }
+    if (attempt.status === "initiated" || attempt.status === "redirected") {
+      await updatePaymentAttempt(txRef, status === "cancelled" ? { status, cancelled_at: (/* @__PURE__ */ new Date()).toISOString() } : { status, failure_reason: "Flutterwave returned an unsuccessful payment status" });
+    }
     return res.json({ bookingId: attempt.booking_id, paymentStatus: status });
   } catch (error) {
     return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to record event payment cancellation" });
@@ -525,8 +555,10 @@ const handleSpecialEventWebhook = async (req, res) => {
     const booking = await getBookingAsService(attempt.booking_id);
     const transaction = await verifyTransaction(String(payload.data.id));
     assertTransactionMatches(transaction, attempt, booking);
+    if (attempt.status !== "successful" && attempt.status !== "manual_review") {
+      await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "verified" });
+    }
     await confirmBookingAsService(booking.id, String(transaction.id));
-    await updatePaymentAttempt(payload.data.tx_ref, { transaction_id: String(transaction.id), status: "completed", completed_at: (/* @__PURE__ */ new Date()).toISOString() });
     return res.status(200).end();
   } catch (error) {
     console.error("Special event webhook processing error", error);

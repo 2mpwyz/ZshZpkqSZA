@@ -34,6 +34,8 @@ type SpecialPaymentAttempt = {
   amount: number | string;
   currency: string;
   status: string;
+  payment_url: string | null;
+  created_at: string;
 };
 
 type FlutterwaveTransaction = {
@@ -52,7 +54,7 @@ const getConfiguration = () => {
   const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
   const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!secretKey || !secretHash || !supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+  if (!secretKey || !supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
     throw new Error("Event payment configuration is incomplete");
   }
 
@@ -111,6 +113,17 @@ const getPaymentAttemptAsService = async (txRef: string) => {
   return attempt;
 };
 
+const getActivePaymentAttempt = async (bookingId: string) => {
+  const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/special_event_payment_attempts?booking_id=eq.${encodeURIComponent(bookingId)}&status=in.(initiated,redirected,verified)&select=id,booking_id,tx_ref,transaction_id,amount,currency,status,payment_url,created_at&order=created_at.desc&limit=1`,
+    { headers: restHeaders(supabaseServiceRoleKey, supabaseAnonKey) },
+  );
+  if (!response.ok) throw new Error("Unable to retrieve active event payment attempt");
+  const [attempt] = await response.json() as SpecialPaymentAttempt[];
+  return attempt || null;
+};
+
 const createPaymentAttempt = async (values: Record<string, unknown>) => {
   const { supabaseUrl, supabaseAnonKey, supabaseServiceRoleKey } = getConfiguration();
   const response = await fetch(`${supabaseUrl}/rest/v1/special_event_payment_attempts`, {
@@ -148,8 +161,12 @@ const confirmBookingAsService = async (bookingId: string, transactionId: string)
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=representation" },
     body: JSON.stringify({ target_booking_id: bookingId, target_transaction_id: transactionId }),
   });
-  if (!response.ok) throw new Error("Unable to confirm event booking");
-  const [confirmation] = await response.json() as Array<{ booking_id: string; confirmation_number: string; ticket_code: string | null; order_number: string; payment_status: string }>;
+  const payload = await response.json().catch(() => null) as Array<{ booking_id: string; confirmation_number: string; ticket_code: string | null; order_number: string; payment_status: string }> | { message?: string; details?: string; hint?: string } | null;
+  if (!response.ok) {
+    const error = payload && !Array.isArray(payload) ? [payload.message, payload.details, payload.hint].filter((value): value is string => typeof value === "string" && Boolean(value.trim())).join(" — ") : "";
+    throw new Error(error || "Unable to confirm event booking");
+  }
+  const [confirmation] = Array.isArray(payload) ? payload : [];
   if (!confirmation) throw new Error("Event booking confirmation was not returned");
   return confirmation;
 };
@@ -166,9 +183,10 @@ const assertTransactionMatches = (transaction: FlutterwaveTransaction, attempt: 
 };
 
 export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
+  let bookingId: string | undefined;
   let txRef: string | undefined;
   try {
-    const { bookingId } = req.body as { bookingId?: string };
+    bookingId = (req.body as { bookingId?: string }).bookingId;
     if (!bookingId) throw new SpecialEventPaymentError("Booking ID is required");
     const booking = await getBooking(bookingId, req.headers.authorization);
     if (booking.payment_status === "paid") throw new SpecialEventPaymentError("This event booking has already been paid", 409);
@@ -177,8 +195,31 @@ export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
     if (Number(booking.total_amount) <= 0) throw new SpecialEventPaymentError("This booking does not require online payment", 400);
 
     const { secretKey } = getConfiguration();
+    const activeAttempt = await getActivePaymentAttempt(booking.id);
+    if (activeAttempt?.status === "redirected" && activeAttempt.payment_url) {
+      return res.json({ paymentUrl: activeAttempt.payment_url, txRef: activeAttempt.tx_ref, bookingId: booking.id });
+    }
+    if (activeAttempt?.status === "verified") {
+      throw new SpecialEventPaymentError("Payment verification is still processing. Refresh My Events shortly.", 409);
+    }
+    if (activeAttempt?.status === "initiated") {
+      const attemptAge = Date.now() - new Date(activeAttempt.created_at).getTime();
+      if (attemptAge < 120_000) {
+        throw new SpecialEventPaymentError("Secure checkout is being prepared. Try again in a moment.", 409);
+      }
+      await updatePaymentAttempt(activeAttempt.tx_ref, { status: "expired", failure_reason: "Checkout preparation timed out" });
+    }
+
     txRef = `special-event-${booking.order_number}-${randomUUID()}`;
-    await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    try {
+      await createPaymentAttempt({ booking_id: booking.id, tx_ref: txRef, amount: Number(booking.total_amount), currency: booking.currency, status: "initiated" });
+    } catch (error) {
+      const racedAttempt = await getActivePaymentAttempt(booking.id);
+      if (racedAttempt?.status === "redirected" && racedAttempt.payment_url) {
+        return res.json({ paymentUrl: racedAttempt.payment_url, txRef: racedAttempt.tx_ref, bookingId: booking.id });
+      }
+      throw error;
+    }
     const response = await fetch(`${flutterwaveBaseUrl}/payments`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secretKey}`, "content-type": "application/json" },
@@ -193,13 +234,17 @@ export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
         customizations: { title: "Special Events", description: `Event booking ${booking.order_number}` },
       }),
     });
-    const payload = await response.json() as { status?: string; data?: { link?: string } };
-    if (!response.ok || payload.status !== "success" || !payload.data?.link) throw new Error("Unable to create secure event payment page");
+    const payload = await response.json().catch(() => null) as { status?: string; message?: string; data?: { link?: string } } | null;
+    if (!response.ok || payload?.status !== "success" || !payload.data?.link) {
+      const providerMessage = typeof payload?.message === "string" ? payload.message : "Flutterwave did not return a checkout link";
+      throw new SpecialEventPaymentError(`Flutterwave checkout failed: ${providerMessage}`, 502);
+    }
     await updatePaymentAttempt(txRef, { status: "redirected", payment_url: payload.data.link });
     return res.json({ paymentUrl: payload.data.link, txRef, bookingId: booking.id });
   } catch (error) {
+    console.error("Special event checkout initialization failed", { bookingId, txRef, error });
     if (txRef) await updatePaymentAttempt(txRef, { status: "failed", failure_reason: error instanceof Error ? error.message : "Unable to prepare event payment" }).catch(() => undefined);
-    return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
+    return res.status(error instanceof SpecialEventPaymentError ? error.status : 502).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
   }
 };
 
@@ -241,6 +286,10 @@ export const cancelSpecialEventPayment: RequestHandler = async (req, res) => {
 
 export const handleSpecialEventWebhook: RequestHandler = async (req, res) => {
   const { secretHash } = getConfiguration();
+  if (!secretHash) {
+    console.error("Special event webhook secret is not configured");
+    return res.status(503).end();
+  }
   if (req.headers["verif-hash"] !== secretHash) return res.status(401).end();
   const payload = req.body as { event?: string; data?: { id?: string | number; tx_ref?: string } };
   if (payload.event !== "charge.completed" || !payload.data?.id || !payload.data.tx_ref) return res.status(200).end();
