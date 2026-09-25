@@ -153,7 +153,7 @@ const FlutterwaveReturnPage = () => {
 
   const returnToMenu = () => {
     clearPendingCheckout();
-    navigate(eventPayment ? "/events" : "/menu", { replace: true });
+    navigate(eventPayment ? "/events?tab=my-tickets" : "/menu", { replace: true });
   };
 
   return (
@@ -178,7 +178,7 @@ const FlutterwaveReturnPage = () => {
                 <p className="mt-1 text-2xl font-bold text-sheraton-navy">{result.orderNumber}</p>
               </div>
               <Button onClick={returnToMenu} className="mt-6 bg-sheraton-gold text-sheraton-navy hover:bg-sheraton-gold/90">
-                Return to Menu
+                {eventPayment ? "Return to Events" : "Return to Menu"}
               </Button>
             </>
           )}
@@ -205,7 +205,7 @@ const FlutterwaveReturnPage = () => {
                 </Button>
                 <Button onClick={returnToMenu} variant="outline">
                   <ArrowLeft className="mr-2 h-4 w-4" />
-                  Return to Menu
+                  {eventPayment ? "Return to Events" : "Return to Menu"}
                 </Button>
               </div>
             </>
@@ -223,7 +223,7 @@ const FlutterwaveReturnPage = () => {
                 </Button>
                 <Button onClick={returnToMenu} variant="outline">
                   <ArrowLeft className="mr-2 h-4 w-4" />
-                  Return to Menu
+                  {eventPayment ? "Return to Events" : "Return to Menu"}
                 </Button>
               </div>
             </>

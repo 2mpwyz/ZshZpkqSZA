@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Calendar,
   MapPin,
@@ -91,8 +91,9 @@ const formatMoney = (value: number, currency: string) =>
 
 const EventsPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { uploadFile, isUploading } = useFileUpload();
-  const [activeTab, setActiveTab] = useState("browse");
+  const [activeTab, setActiveTab] = useState(searchParams.get("tab") === "my-tickets" ? "my-tickets" : "browse");
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [eventCart, setEventCart] = useState<Record<string, number>>({});
   const [showCheckout, setShowCheckout] = useState(false);
@@ -180,6 +181,11 @@ const EventsPage: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (requestedTab === "my-tickets" || requestedTab === "my-events") setActiveTab(requestedTab);
+  }, [searchParams]);
 
   useEffect(() => {
     void loadEvents();
@@ -471,7 +477,7 @@ const EventsPage: React.FC = () => {
   const handleBooked = async () => {
     clearEventCart();
     setShowCheckout(false);
-    setActiveTab("my-events");
+    setActiveTab("my-tickets");
     const { data: authData } = await supabase.auth.getUser();
     if (authData.user) await loadUserData(authData.user.id);
     await loadEvents();
@@ -527,15 +533,15 @@ const EventsPage: React.FC = () => {
 
   const renderMyEvents = () => (
     <div className="space-y-6">
-      <div className="flex items-center justify-between"><h3 className="text-xl font-semibold text-sheraton-navy">My Events</h3><Button onClick={() => setActiveTab("planning")} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy"><Plus className="h-4 w-4 mr-2" />Create Event</Button></div>
-      {!isSignedIn && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Sign in to view bookings, saved events, and event proposals.</div>}
-      {isSignedIn && !bookings.length && !plans.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your booked events and proposals will appear here.</div>}
+      <div className="flex items-center justify-between"><h3 className="text-xl font-semibold text-sheraton-navy">{activeTab === "my-tickets" ? "My Tickets" : "My Events"}</h3>{activeTab === "my-events" && <Button onClick={() => setActiveTab("planning")} className="bg-sheraton-gold hover:bg-sheraton-gold/90 text-sheraton-navy"><Plus className="h-4 w-4 mr-2" />Create Event</Button>}</div>
+      {!isSignedIn && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">{activeTab === "my-tickets" ? "Sign in to view your event bookings and tickets." : "Sign in to view and manage your event proposals."}</div>}
+      {isSignedIn && activeTab === "my-tickets" && !bookings.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your event bookings and tickets will appear here.</div>}{isSignedIn && activeTab === "my-events" && !plans.length && <div className="bg-white rounded-lg shadow-md p-6 text-center text-gray-600">Your created event proposals will appear here.</div>}
       <div className="grid md:grid-cols-2 gap-4">
-        {bookings.map((booking) => {
+        {activeTab === "my-tickets" && bookings.map((booking) => {
           const event = getEvent(booking.event_id);
           return <div key={booking.id} className="bg-white rounded-lg shadow-md p-6"><div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{event?.title || `Event booking ${booking.order_number}`}</h4><Badge variant={booking.status === "confirmed" ? "default" : "secondary"}>{booking.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{event ? formatEventDay(event.starts_at, event.timezone) : "Date pending"}</div><p className="text-sm text-gray-600 mb-4">{booking.quantity} ticket{booking.quantity === 1 ? "" : "s"} • {booking.payment_status}</p>{booking.status === "pending" && booking.payment_status === "pending" && booking.expires_at && new Date(booking.expires_at).getTime() > Date.now() && <Button className="mb-3" onClick={() => void retryBookingPayment(booking.id)} disabled={retryingBookingId !== null}>{retryingBookingId === booking.id ? "Opening secure checkout…" : "Continue payment"}</Button>}{booking.payment_status === "manual_review" && <p className="mb-3 text-sm text-amber-700">Payment is verified and being reviewed by the event team.</p>}{tickets.filter((ticket) => ticket.booking_id === booking.id).map((ticket) => <div key={ticket.id} className="mb-4 rounded-lg border p-3"><div className="flex items-center gap-3"><TicketQr token={ticket.ticket_token} size={112} /><div><p className="font-medium text-sheraton-navy">Ticket {ticket.ticket_number}</p><p className="text-sm text-gray-600">{ticket.status === "checked_in" ? "Checked in" : ticket.status}</p><p className="break-all text-xs text-gray-500">{ticket.ticket_token}</p><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(ticket.ticket_token)}>Copy ticket code</Button></div></div></div>)}<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => setActiveTab("browse")}>View Event</Button><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(booking.confirmation_number)}><Share2 className="h-4 w-4" /></Button></div></div>;
         })}
-        {plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md overflow-hidden"><div className="p-6">{plan.image_url && <img src={plan.image_url} alt={plan.title} loading="lazy" className="mb-4 h-40 w-full rounded-lg object-cover" />}<div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div></div>)}
+        {activeTab === "my-events" && plans.map((plan) => <div key={plan.id} className="bg-white rounded-lg shadow-md overflow-hidden"><div className="p-6">{plan.image_url && <img src={plan.image_url} alt={plan.title} loading="lazy" className="mb-4 h-40 w-full rounded-lg object-cover" />}<div className="flex items-center justify-between mb-4"><h4 className="font-semibold text-sheraton-navy">{plan.title}</h4><Badge variant="secondary">{plan.status}</Badge></div><div className="flex items-center text-sm text-gray-600 mb-2"><Calendar className="h-4 w-4 mr-2" />{plan.event_date}</div><p className="text-sm text-gray-600 mb-4">{plan.location} • {plan.expected_guests} expected guests</p><div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => editPlan(plan)}>Edit plan</Button><Button variant="outline" size="sm" onClick={() => void deletePlan(plan.id)}>Delete</Button></div></div></div>)}
       </div>
     </div>
   );
@@ -558,6 +564,7 @@ const EventsPage: React.FC = () => {
 
   const tabs = [
     { id: "browse", label: "Browse Events", content: renderBrowseEvents },
+    { id: "my-tickets", label: "My Tickets", content: renderMyEvents },
     { id: "my-events", label: "My Events", content: renderMyEvents },
     { id: "planning", label: "Event Planning", content: renderPlanning },
   ];
