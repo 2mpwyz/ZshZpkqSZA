@@ -36,6 +36,7 @@ const FlutterwaveReturnPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [result, setResult] = useState<PaymentResult>(() => getInitialPaymentResult(searchParams));
+  const [verificationAttempt, setVerificationAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -104,15 +105,15 @@ const FlutterwaveReturnPage = () => {
           },
           body: JSON.stringify({ transactionId, txRef }),
         });
-        const payload = (await response.json()) as {
+        const payload = (await response.json().catch(() => null)) as {
           orderNumber?: string;
           paymentStatus?: string;
           confirmationNumber?: string;
           error?: string;
-        };
+        } | null;
 
-        if (!response.ok || !payload.orderNumber) {
-          throw new Error(payload.error || "Payment could not be confirmed.");
+        if (!response.ok || !payload?.orderNumber) {
+          throw new Error(payload?.error || `Payment could not be confirmed (HTTP ${response.status}).`);
         }
         if (eventPayment && payload.paymentStatus === "manual_review") {
           clearPendingCheckout();
@@ -137,10 +138,16 @@ const FlutterwaveReturnPage = () => {
     return () => {
       active = false;
     };
-  }, [searchParams]);
+  }, [searchParams, verificationAttempt]);
 
   const eventPayment = searchParams.get("tx_ref")?.startsWith("special-event-") ?? false;
+  const canRetryEventConfirmation = eventPayment && searchParams.get("status") === "successful";
   const retryPayment = () => {
+    if (canRetryEventConfirmation) {
+      setResult({ status: "loading" });
+      setVerificationAttempt((attempt) => attempt + 1);
+      return;
+    }
     navigate(eventPayment ? "/events" : "/menu", { replace: true });
   };
 
@@ -194,7 +201,7 @@ const FlutterwaveReturnPage = () => {
               <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
                 <Button onClick={retryPayment} className="bg-sheraton-gold text-sheraton-navy hover:bg-sheraton-gold/90">
                   <RefreshCw className="mr-2 h-4 w-4" />
-                  Try payment again
+                  {canRetryEventConfirmation ? "Retry booking confirmation" : "Try payment again"}
                 </Button>
                 <Button onClick={returnToMenu} variant="outline">
                   <ArrowLeft className="mr-2 h-4 w-4" />
@@ -212,7 +219,7 @@ const FlutterwaveReturnPage = () => {
               <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
                 <Button onClick={retryPayment} className="bg-sheraton-gold text-sheraton-navy hover:bg-sheraton-gold/90">
                   <RefreshCw className="mr-2 h-4 w-4" />
-                  Try payment again
+                  {canRetryEventConfirmation ? "Retry booking confirmation" : "Try payment again"}
                 </Button>
                 <Button onClick={returnToMenu} variant="outline">
                   <ArrowLeft className="mr-2 h-4 w-4" />

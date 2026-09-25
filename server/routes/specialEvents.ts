@@ -161,8 +161,12 @@ const confirmBookingAsService = async (bookingId: string, transactionId: string)
     headers: { ...restHeaders(supabaseServiceRoleKey, supabaseAnonKey, true), Prefer: "return=representation" },
     body: JSON.stringify({ target_booking_id: bookingId, target_transaction_id: transactionId }),
   });
-  if (!response.ok) throw new Error("Unable to confirm event booking");
-  const [confirmation] = await response.json() as Array<{ booking_id: string; confirmation_number: string; ticket_code: string | null; order_number: string; payment_status: string }>;
+  const payload = await response.json().catch(() => null) as Array<{ booking_id: string; confirmation_number: string; ticket_code: string | null; order_number: string; payment_status: string }> | { message?: string; details?: string; hint?: string } | null;
+  if (!response.ok) {
+    const error = payload && !Array.isArray(payload) ? [payload.message, payload.details, payload.hint].filter((value): value is string => typeof value === "string" && Boolean(value.trim())).join(" — ") : "";
+    throw new Error(error || "Unable to confirm event booking");
+  }
+  const [confirmation] = Array.isArray(payload) ? payload : [];
   if (!confirmation) throw new Error("Event booking confirmation was not returned");
   return confirmation;
 };
