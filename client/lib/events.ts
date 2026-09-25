@@ -75,6 +75,7 @@ export interface SpecialEventPlan {
   location: string;
   expected_guests: number;
   description: string | null;
+  image_url: string | null;
   is_private: boolean;
   status: "draft" | "submitted" | "approved" | "cancelled";
   created_at: string;
