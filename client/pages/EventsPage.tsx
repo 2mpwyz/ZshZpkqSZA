@@ -444,7 +444,8 @@ const EventsPage: React.FC = () => {
   const editPlan = (plan: SpecialEventPlan) => {
     setEditingPlanId(plan.id);
     setPlanForm({ title: plan.title, eventDate: plan.event_date, location: plan.location, expectedGuests: String(plan.expected_guests), description: plan.description || "", imageUrl: plan.image_url || "", isPrivate: plan.is_private });
-    setActiveTab("planning");
+    setActiveTab("my-events");
+    setShouldScrollToQuickCreation(true);
   };
 
   const deletePlan = async (planId: string) => {
