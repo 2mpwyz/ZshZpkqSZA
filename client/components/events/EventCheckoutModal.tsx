@@ -36,6 +36,15 @@ type Confirmation = {
 
 const formatMoney = (value: number, currency: string) => new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value || 0);
 
+const getCheckoutErrorMessage = (error: unknown) => {
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (!error || typeof error !== "object") return "Unable to complete event booking. Please try again.";
+  const details = error as Record<string, unknown>;
+  const messages = [details.message, details.details, details.hint]
+    .filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+  return [...new Set(messages)].join(" — ") || "Unable to complete event booking. Please try again.";
+};
+
 const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, onUpdateCart, onRemoveFromCart, onClearCart, onBooked }) => {
   const navigate = useNavigate();
   const [step, setStep] = useState<"tickets" | "details" | "payment" | "confirmation">("tickets");
@@ -104,8 +113,10 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
       headers: { Authorization: `Bearer ${sessionData.session.access_token}`, "content-type": "application/json" },
       body: JSON.stringify({ bookingId }),
     });
-    const payload = await response.json() as { paymentUrl?: string; error?: string };
-    if (!response.ok || !payload.paymentUrl) throw new Error(payload.error || "Unable to open secure event payment.");
+    const payload = await response.json().catch(() => null) as { paymentUrl?: string; error?: string } | null;
+    if (!response.ok || !payload?.paymentUrl) {
+      throw new Error(payload?.error || `Secure event checkout could not be started (HTTP ${response.status}).`);
+    }
     if (window.top && window.top !== window.self) window.top.location.replace(payload.paymentUrl);
     else window.location.replace(payload.paymentUrl);
   };
@@ -146,7 +157,7 @@ const EventCheckoutModal: React.FC<Props> = ({ isOpen, onClose, cart, events, on
       await startHostedPayment(booking.booking_id);
     } catch (error) {
       console.error("Unable to book special event", error);
-      setErrorMessage(error instanceof Error ? error.message : "Unable to complete event booking.");
+      setErrorMessage(getCheckoutErrorMessage(error));
     } finally {
       setIsProcessing(false);
     }

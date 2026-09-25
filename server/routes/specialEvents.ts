@@ -54,7 +54,7 @@ const getConfiguration = () => {
   const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
   const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!secretKey || !secretHash || !supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+  if (!secretKey || !supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
     throw new Error("Event payment configuration is incomplete");
   }
 
@@ -179,9 +179,10 @@ const assertTransactionMatches = (transaction: FlutterwaveTransaction, attempt: 
 };
 
 export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
+  let bookingId: string | undefined;
   let txRef: string | undefined;
   try {
-    const { bookingId } = req.body as { bookingId?: string };
+    bookingId = (req.body as { bookingId?: string }).bookingId;
     if (!bookingId) throw new SpecialEventPaymentError("Booking ID is required");
     const booking = await getBooking(bookingId, req.headers.authorization);
     if (booking.payment_status === "paid") throw new SpecialEventPaymentError("This event booking has already been paid", 409);
@@ -229,13 +230,17 @@ export const prepareSpecialEventPayment: RequestHandler = async (req, res) => {
         customizations: { title: "Special Events", description: `Event booking ${booking.order_number}` },
       }),
     });
-    const payload = await response.json() as { status?: string; data?: { link?: string } };
-    if (!response.ok || payload.status !== "success" || !payload.data?.link) throw new Error("Unable to create secure event payment page");
+    const payload = await response.json().catch(() => null) as { status?: string; message?: string; data?: { link?: string } } | null;
+    if (!response.ok || payload?.status !== "success" || !payload.data?.link) {
+      const providerMessage = typeof payload?.message === "string" ? payload.message : "Flutterwave did not return a checkout link";
+      throw new SpecialEventPaymentError(`Flutterwave checkout failed: ${providerMessage}`, 502);
+    }
     await updatePaymentAttempt(txRef, { status: "redirected", payment_url: payload.data.link });
     return res.json({ paymentUrl: payload.data.link, txRef, bookingId: booking.id });
   } catch (error) {
+    console.error("Special event checkout initialization failed", { bookingId, txRef, error });
     if (txRef) await updatePaymentAttempt(txRef, { status: "failed", failure_reason: error instanceof Error ? error.message : "Unable to prepare event payment" }).catch(() => undefined);
-    return res.status(error instanceof SpecialEventPaymentError ? error.status : 400).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
+    return res.status(error instanceof SpecialEventPaymentError ? error.status : 502).json({ error: error instanceof Error ? error.message : "Unable to prepare event payment" });
   }
 };
 
@@ -277,6 +282,10 @@ export const cancelSpecialEventPayment: RequestHandler = async (req, res) => {
 
 export const handleSpecialEventWebhook: RequestHandler = async (req, res) => {
   const { secretHash } = getConfiguration();
+  if (!secretHash) {
+    console.error("Special event webhook secret is not configured");
+    return res.status(503).end();
+  }
   if (req.headers["verif-hash"] !== secretHash) return res.status(401).end();
   const payload = req.body as { event?: string; data?: { id?: string | number; tx_ref?: string } };
   if (payload.event !== "charge.completed" || !payload.data?.id || !payload.data.tx_ref) return res.status(200).end();
